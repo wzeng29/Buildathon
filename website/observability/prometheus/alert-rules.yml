@@ -1,0 +1,117 @@
+groups:
+  - name: users_api_alerts
+    interval: 30s
+    rules:
+      # Alta tasa de errores HTTP
+      - alert: HighErrorRate
+        expr: rate(api_errors_total[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "Alta tasa de errores en Users API"
+          description: "La API está generando {{ $value | humanize }} errores/segundo en el endpoint {{ $labels.endpoint }}"
+
+      # Errores críticos de base de datos
+      - alert: DatabaseErrorRate
+        expr: rate(db_queries_total{status="error"}[5m]) > 0.05
+        for: 1m
+        labels:
+          severity: critical
+          component: database
+        annotations:
+          summary: "Errores en queries de base de datos"
+          description: "Se detectaron {{ $value | humanize }} errores/segundo en queries {{ $labels.query_type }} a tabla {{ $labels.table }}"
+
+      # Queries lentas de base de datos
+      - alert: SlowDatabaseQueries
+        expr: histogram_quantile(0.95, rate(db_query_duration_seconds_bucket[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "Queries de base de datos lentas detectadas"
+          description: "El P95 de latencia para {{ $labels.query_type }} en {{ $labels.table }} es {{ $value | humanize }}s (>1s)"
+
+      # Event Loop bloqueado
+      - alert: EventLoopLagHigh
+        expr: nodejs_eventloop_lag_seconds > 0.1
+        for: 2m
+        labels:
+          severity: warning
+          component: nodejs
+        annotations:
+          summary: "Event Loop de Node.js bloqueado"
+          description: "El Event Loop tiene un lag de {{ $value | humanize }}s, indicando posible bloqueo del proceso"
+
+      # Alto uso de memoria
+      - alert: HighMemoryUsage
+        expr: (process_resident_memory_bytes{job="users-api"} / 1024 / 1024) > 500
+        for: 5m
+        labels:
+          severity: warning
+          component: nodejs
+        annotations:
+          summary: "Alto uso de memoria en Users API"
+          description: "La API está usando {{ $value | humanize }}MB de memoria (>500MB)"
+
+      # API no responde (no requests en los últimos 5 minutos)
+      - alert: APINotResponding
+        expr: rate(http_requests_total[5m]) == 0
+        for: 5m
+        labels:
+          severity: critical
+          component: api
+        annotations:
+          summary: "Users API no está procesando requests"
+          description: "No se han procesado requests HTTP en los últimos 5 minutos"
+
+      # Tasa alta de requests 5xx
+      - alert: High5xxRate
+        expr: |
+          sum(rate(http_requests_total{status_code=~"5.."}[5m]))
+          /
+          sum(rate(http_requests_total[5m]))
+          > 0.05
+        for: 2m
+        labels:
+          severity: critical
+          component: api
+        annotations:
+          summary: "Alta tasa de errores 5xx en Users API"
+          description: "{{ $value | humanizePercentage }} de los requests están fallando con 5xx"
+
+      # Latencia HTTP alta
+      - alert: HighHTTPLatency
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "Alta latencia HTTP detectada"
+          description: "El P95 de latencia para {{ $labels.route }} es {{ $value | humanize }}s (>2s)"
+
+      # Conexiones de BD bajas (posible leak)
+      - alert: LowDatabaseConnections
+        expr: db_connections_active < 1
+        for: 2m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "Pocas conexiones activas a la base de datos"
+          description: "Solo hay {{ $value }} conexiones activas a PostgreSQL"
+
+      # Tasa anormal de creación de usuarios
+      - alert: AbnormalUserCreationRate
+        expr: rate(users_created_total[5m]) > 10
+        for: 3m
+        labels:
+          severity: info
+          component: business
+        annotations:
+          summary: "Tasa anormalmente alta de creación de usuarios"
+          description: "Se están creando {{ $value | humanize }} usuarios/segundo (posible abuso o bot)"

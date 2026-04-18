@@ -46,60 +46,17 @@ OPERATION_ALIASES = {
 def parse_action_request(text: str) -> ActionRequest | None:
     """Parse explicit CRUD commands from Slack or CLI text.
 
-    Supported patterns:
+    Parsing order:
 
-    - create jira ticket summary="Build RAG" description="..." issue_type="Task"
-    - read jira ticket KAN-1
-    - update jira ticket KAN-1 summary="..." status="In Progress"
-    - delete jira ticket KAN-1
-    - create confluence page title="Runbook" body="<p>Hello</p>" parent_id="123"
-    - read confluence page 459028
-    - update confluence page 459028 title="New title" body="<p>Updated</p>"
-    - delete confluence page 459028
-    - run k6 test auth vus=2 duration=30s
-    - create k6 report auth
-    - create k6 workflow auth duration=30s
-    - read grafana dashboard auth
+    - Jira workflow shorthand like `test KAN-5`
+    - explicit system commands like `read jira ticket KAN-1`
+    - natural word-order commands like `create a ticket in jira: ...`
     """
-
-    jira_workflow_match = JIRA_PERF_WORKFLOW_PATTERN.match(text or "")
-    if jira_workflow_match:
-        _, issue_key = jira_workflow_match.groups()
-        remainder = (text or "")[jira_workflow_match.end() :].strip()
-        fields = _extract_fields(remainder)
-        return ActionRequest(
-            operation="run",
-            target_system="jira",
-            target_type="workflow",
-            identifier=issue_key.upper(),
-            fields=fields,
-        )
-
-    match = COMMAND_PATTERN.match(text or "")
-    natural_match = None
-    if not match:
-        natural_match = NATURAL_COMMAND_PATTERN.match(text or "")
-        if not natural_match:
-            return None
-        operation, target_type, target_system = natural_match.groups()
-        match_end = natural_match.end()
-    else:
-        operation, target_system, target_type = match.groups()
-        match_end = match.end()
-
-    operation = OPERATION_ALIASES.get(operation.lower(), operation.lower())
-    target_type = OPERATION_ALIASES.get(target_type.lower(), target_type.lower())
-
-    remainder = (text or "")[match_end:].strip()
-    fields = _extract_fields(remainder)
-    identifier = _extract_identifier(remainder, fields)
-
-    return ActionRequest(
-        operation=operation,
-        target_system=target_system.lower(),
-        target_type=target_type.lower(),
-        identifier=identifier,
-        fields=fields,
+    normalized = text or ""
+    return (
+        _parse_jira_workflow_shorthand(normalized)
+        or _parse_explicit_command(normalized)
+        or _parse_natural_command(normalized)
     )
 
 
@@ -137,13 +94,77 @@ def parse_contextual_action_request(
     )
 
 
+def _parse_jira_workflow_shorthand(text: str) -> ActionRequest | None:
+    """Parse `test jira DEV-42 ...` and `test DEV-42 ...` into Jira workflow actions."""
+    match = JIRA_PERF_WORKFLOW_PATTERN.match(text)
+    if not match:
+        return None
+    _, issue_key = match.groups()
+    remainder = text[match.end() :].strip()
+    return ActionRequest(
+        operation="run",
+        target_system="jira",
+        target_type="workflow",
+        identifier=issue_key.upper(),
+        fields=_extract_fields(remainder),
+    )
+
+
+def _parse_explicit_command(text: str) -> ActionRequest | None:
+    """Parse commands with explicit `<system> <type>` ordering."""
+    match = COMMAND_PATTERN.match(text)
+    if not match:
+        return None
+    operation, target_system, target_type = match.groups()
+    return _build_action_request(
+        operation=operation,
+        target_system=target_system,
+        target_type=target_type,
+        remainder=text[match.end() :].strip(),
+    )
+
+
+def _parse_natural_command(text: str) -> ActionRequest | None:
+    """Parse natural word-order commands like `create a ticket in jira`."""
+    match = NATURAL_COMMAND_PATTERN.match(text)
+    if not match:
+        return None
+    operation, target_type, target_system = match.groups()
+    return _build_action_request(
+        operation=operation,
+        target_system=target_system,
+        target_type=target_type,
+        remainder=text[match.end() :].strip(),
+    )
+
+
+def _build_action_request(
+    operation: str,
+    target_system: str,
+    target_type: str,
+    remainder: str,
+) -> ActionRequest:
+    """Build a normalized action request from parsed command parts."""
+    normalized_operation = _normalize_alias(operation)
+    normalized_target_type = _normalize_alias(target_type)
+    fields = _extract_fields(remainder)
+    identifier = _extract_identifier(remainder, fields)
+    return ActionRequest(
+        operation=normalized_operation,
+        target_system=target_system.lower(),
+        target_type=normalized_target_type.lower(),
+        identifier=identifier,
+        fields=fields,
+    )
+
+
 def _extract_fields(remainder: str) -> dict[str, str]:
-    """Extract key=value pairs from the command tail."""
+    """Extract `key=value` or `label: value` fields from the command tail."""
     fields: dict[str, str] = {}
     for match in FIELD_PATTERN.finditer(remainder):
         key = match.group(1).lower()
         value = match.group(3) or match.group(4) or match.group(5) or ""
-        fields[OPERATION_ALIASES.get(key, key)] = value.strip()
+        fields[_normalize_alias(key)] = value.strip()
 
     if fields:
         return fields
@@ -152,7 +173,7 @@ def _extract_fields(remainder: str) -> dict[str, str]:
         key = match.group(1).lower().strip()
         value = match.group(2).strip().strip("\"'")
         if value:
-            fields[OPERATION_ALIASES.get(key, key)] = value
+            fields[_normalize_alias(key)] = value
     return fields
 
 
@@ -170,7 +191,13 @@ def _extract_identifier(remainder: str, fields: dict[str, str]) -> str | None:
     return None
 
 
+def _normalize_alias(value: str) -> str:
+    """Normalize operation/type/field aliases into the canonical project vocabulary."""
+    return OPERATION_ALIASES.get(value.lower(), value.lower())
+
+
 def _identifier_from_reference(reference: SearchDocument) -> str | None:
+    """Resolve a stable follow-up identifier from the last cited document."""
     metadata = reference.metadata
     if metadata.get("key"):
         return str(metadata["key"])

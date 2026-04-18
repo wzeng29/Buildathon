@@ -1,0 +1,16 @@
+---
+import StoreLayout from "@/layouts/StoreLayout.astro";
+import MyOrders from "@/components/store/MyOrders";
+---
+
+<StoreLayout title="Mis pedidos" description="Historial de tus compras" lang="es">
+  <div class="container mx-auto px-4 py-8">
+    <div class="flex items-center justify-between mb-6">
+      <h1 class="text-3xl font-bold text-gray-900">Mis Pedidos</h1>
+      <a href="/es/productos" class="text-indigo-600 text-sm font-medium hover:underline">
+        Seguir comprando →
+      </a>
+    </div>
+    <MyOrders client:load />
+  </div>
+</StoreLayout>

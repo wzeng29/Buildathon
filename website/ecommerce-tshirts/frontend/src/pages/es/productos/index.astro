@@ -1,0 +1,14 @@
+---
+import StoreLayout from "@/layouts/StoreLayout.astro";
+import ProductGrid from "@/components/store/ProductGrid";
+---
+
+<StoreLayout title="Productos" description="Explora nuestra colección completa de poleras" lang="es">
+  <div class="container mx-auto px-4 py-8">
+    <div class="mb-6">
+      <h1 class="text-3xl font-bold text-gray-900">Catálogo de Poleras</h1>
+      <p class="text-gray-500 mt-1">Encuentra tu polera perfecta entre nuestra selección premium</p>
+    </div>
+    <ProductGrid client:load />
+  </div>
+</StoreLayout>

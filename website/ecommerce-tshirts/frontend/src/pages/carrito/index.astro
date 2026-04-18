@@ -1,0 +1,11 @@
+---
+import StoreLayout from "@/layouts/StoreLayout.astro";
+import CartView from "@/components/store/CartView";
+---
+
+<StoreLayout title="My Cart" description="Review the items in your cart" lang="en">
+  <div class="container mx-auto px-4 py-8">
+    <h1 class="text-3xl font-bold text-gray-900 mb-6">My Cart</h1>
+    <CartView client:load />
+  </div>
+</StoreLayout>

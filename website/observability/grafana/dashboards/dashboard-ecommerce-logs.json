@@ -1,0 +1,329 @@
+{
+  "title": "Poleras Store · Logs — Error Streams & Trace Correlation",
+  "uid": "ecommerce-logs-v1",
+  "description": "Logs estructurados en tiempo real. Ingresa un Session ID para rastrear el journey completo del usuario a través de los 5 servicios. Haz clic en traceId para saltar a Tempo.",
+  "tags": ["ecommerce", "logs", "loki", "production"],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "refresh": "15s",
+  "time": { "from": "now-30m", "to": "now" },
+  "links": [
+    { "title": "SLO — Error Budget", "url": "/d/ecommerce-slo-v1", "type": "link", "icon": "external link", "tooltip": "Error Budget y Burn Rate", "keepTime": true, "targetBlank": false },
+    { "title": "RED Metrics", "url": "/d/ecommerce-apm-v1", "type": "link", "icon": "external link", "tooltip": "Rate / Errors / Duration", "keepTime": true, "targetBlank": false },
+    { "title": "Distributed Tracing", "url": "/d/ecommerce-traces-v1", "type": "link", "icon": "external link", "tooltip": "Service Map y trazas end-to-end", "keepTime": true, "targetBlank": false }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "service",
+        "label": "Servicio",
+        "type": "custom",
+        "current": { "value": ".*", "text": "Todos" },
+        "options": [
+          { "value": ".*", "text": "Todos", "selected": true },
+          { "value": "api", "text": "users-api" },
+          { "value": "products-service", "text": "products-service" },
+          { "value": "cart-service", "text": "cart-service" },
+          { "value": "orders-service", "text": "orders-service" },
+          { "value": "payments-service", "text": "payments-service" }
+        ],
+        "hide": 0
+      },
+      {
+        "name": "level",
+        "label": "Nivel",
+        "type": "custom",
+        "current": { "value": "", "text": "Todos" },
+        "options": [
+          { "value": "", "text": "Todos", "selected": true },
+          { "value": "info", "text": "INFO" },
+          { "value": "warn", "text": "WARN" },
+          { "value": "error", "text": "ERROR" }
+        ],
+        "hide": 0
+      },
+      {
+        "name": "session_id",
+        "label": "Session ID",
+        "type": "textbox",
+        "current": { "value": "", "text": "" },
+        "description": "Ingresa un sess-XXXX para rastrear el journey completo de un usuario",
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+
+    { "type": "row", "title": "📊 Volumen de Logs", "id": 300, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }, "collapsed": false },
+
+    {
+      "id": 301, "type": "stat", "title": "Logs por Minuto",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] } } },
+      "targets": [{ "datasource": { "type": "loki", "uid": "loki" }, "expr": "sum(count_over_time({service=~\"api|products-service|cart-service|orders-service|payments-service\"}[$__range]))", "refId": "A" }]
+    },
+
+    {
+      "id": 302, "type": "stat", "title": "Errores en Ventana",
+      "description": "Total de logs con nivel error en el rango de tiempo seleccionado",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 5 }] } } },
+      "targets": [{ "datasource": { "type": "loki", "uid": "loki" }, "expr": "sum(count_over_time({service=~\"api|products-service|cart-service|orders-service|payments-service\"} | json | level=\"error\" [$__range]))", "refId": "A" }]
+    },
+
+    {
+      "id": 303, "type": "stat", "title": "Warnings en Ventana",
+      "description": "Total de logs con nivel warn en el rango de tiempo seleccionado",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "orange", "value": 10 }] } } },
+      "targets": [{ "datasource": { "type": "loki", "uid": "loki" }, "expr": "sum(count_over_time({service=~\"api|products-service|cart-service|orders-service|payments-service\"} | json | level=\"warn\" [$__range]))", "refId": "A" }]
+    },
+
+    {
+      "id": 304, "type": "timeseries",
+      "title": "Tasa de Logs por Servicio",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max", "last"] }, "tooltip": { "mode": "multi" } },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 8, "drawStyle": "bars" } } },
+      "targets": [
+        { "datasource": { "type": "loki", "uid": "loki" }, "expr": "sum by (service) (rate({service=~\"api|products-service|cart-service|orders-service|payments-service\"}[1m]))", "legendFormat": "{{service}}", "refId": "A" }
+      ]
+    },
+
+    {
+      "id": 305, "type": "timeseries",
+      "title": "Tasa de Errores en Logs",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max", "last"] }, "tooltip": { "mode": "multi" } },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 20, "drawStyle": "bars" } },
+        "overrides": [
+          { "matcher": { "id": "byRegexp", "options": ".*error.*" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] },
+          { "matcher": { "id": "byRegexp", "options": ".*warn.*" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }] }
+        ]
+      },
+      "targets": [
+        { "datasource": { "type": "loki", "uid": "loki" }, "expr": "sum by (service) (rate({service=~\"api|products-service|cart-service|orders-service|payments-service\"} | json | level=\"error\" [1m]))", "legendFormat": "ERROR {{service}}", "refId": "A" },
+        { "datasource": { "type": "loki", "uid": "loki" }, "expr": "sum by (service) (rate({service=~\"api|products-service|cart-service|orders-service|payments-service\"} | json | level=\"warn\" [1m]))", "legendFormat": "WARN {{service}}", "refId": "B" }
+      ]
+    },
+
+    {
+      "id": 306, "type": "timeseries",
+      "title": "Volumen de Logs por Nivel",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 9 },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "last"] }, "tooltip": { "mode": "multi" } },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 15, "drawStyle": "bars", "stacking": { "mode": "normal" } } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "INFO" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#73BF69" } }] },
+          { "matcher": { "id": "byName", "options": "WARN" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#FF9830" } }] },
+          { "matcher": { "id": "byName", "options": "ERROR" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#F2495C" } }] }
+        ]
+      },
+      "targets": [
+        { "datasource": { "type": "loki", "uid": "loki" }, "expr": "sum(rate({service=~\"api|products-service|cart-service|orders-service|payments-service\"} | json | level=\"info\" [1m]))", "legendFormat": "INFO", "refId": "A" },
+        { "datasource": { "type": "loki", "uid": "loki" }, "expr": "sum(rate({service=~\"api|products-service|cart-service|orders-service|payments-service\"} | json | level=\"warn\" [1m]))", "legendFormat": "WARN", "refId": "B" },
+        { "datasource": { "type": "loki", "uid": "loki" }, "expr": "sum(rate({service=~\"api|products-service|cart-service|orders-service|payments-service\"} | json | level=\"error\" [1m]))", "legendFormat": "ERROR", "refId": "C" }
+      ]
+    },
+
+    { "type": "row", "title": "🔴 Errores — Logs Recientes", "id": 310, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 }, "collapsed": false },
+
+    {
+      "id": 311, "type": "logs",
+      "title": "Errores Recientes — Todos los Servicios",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 18 },
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": true,
+        "showCommonLabels": false,
+        "showLabels": true,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "{service=~\"api|products-service|cart-service|orders-service|payments-service\"} |= \"error\"",
+          "refId": "A"
+        }
+      ]
+    },
+
+    { "type": "row", "title": "📋 Stream de Logs por Servicio", "id": 320, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 28 }, "collapsed": false },
+
+    {
+      "id": 321, "type": "logs",
+      "title": "users-api",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 29 },
+      "options": { "dedupStrategy": "none", "enableLogDetails": true, "prettifyLogMessage": false, "showCommonLabels": false, "showLabels": false, "showTime": true, "sortOrder": "Descending", "wrapLogMessage": false },
+      "targets": [{ "datasource": { "type": "loki", "uid": "loki" }, "expr": "{service=\"api\"}", "refId": "A" }]
+    },
+
+    {
+      "id": 322, "type": "logs",
+      "title": "products-service",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 29 },
+      "options": { "dedupStrategy": "none", "enableLogDetails": true, "prettifyLogMessage": false, "showCommonLabels": false, "showLabels": false, "showTime": true, "sortOrder": "Descending", "wrapLogMessage": false },
+      "targets": [{ "datasource": { "type": "loki", "uid": "loki" }, "expr": "{service=\"products-service\"}", "refId": "A" }]
+    },
+
+    {
+      "id": 323, "type": "logs",
+      "title": "cart-service",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 29 },
+      "options": { "dedupStrategy": "none", "enableLogDetails": true, "prettifyLogMessage": false, "showCommonLabels": false, "showLabels": false, "showTime": true, "sortOrder": "Descending", "wrapLogMessage": false },
+      "targets": [{ "datasource": { "type": "loki", "uid": "loki" }, "expr": "{service=\"cart-service\"}", "refId": "A" }]
+    },
+
+    {
+      "id": 324, "type": "logs",
+      "title": "orders-service",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 37 },
+      "options": { "dedupStrategy": "none", "enableLogDetails": true, "prettifyLogMessage": false, "showCommonLabels": false, "showLabels": false, "showTime": true, "sortOrder": "Descending", "wrapLogMessage": false },
+      "targets": [{ "datasource": { "type": "loki", "uid": "loki" }, "expr": "{service=\"orders-service\"}", "refId": "A" }]
+    },
+
+    {
+      "id": 325, "type": "logs",
+      "title": "payments-service",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 37 },
+      "options": { "dedupStrategy": "none", "enableLogDetails": true, "prettifyLogMessage": false, "showCommonLabels": false, "showLabels": false, "showTime": true, "sortOrder": "Descending", "wrapLogMessage": false },
+      "targets": [{ "datasource": { "type": "loki", "uid": "loki" }, "expr": "{service=\"payments-service\"}", "refId": "A" }]
+    },
+
+    { "type": "row", "title": "🛒 Actividad de Negocio (Log Events)", "id": 330, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 45 }, "collapsed": false },
+
+    {
+      "id": 331, "type": "logs",
+      "title": "Registros y Logins de Usuarios",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 46 },
+      "options": { "dedupStrategy": "none", "enableLogDetails": true, "prettifyLogMessage": false, "showCommonLabels": false, "showLabels": false, "showTime": true, "sortOrder": "Descending", "wrapLogMessage": false },
+      "targets": [{ "datasource": { "type": "loki", "uid": "loki" }, "expr": "{service=\"api\"} |= \"auth\"", "refId": "A" }]
+    },
+
+    {
+      "id": 332, "type": "logs",
+      "title": "Pedidos Creados",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 46 },
+      "options": { "dedupStrategy": "none", "enableLogDetails": true, "prettifyLogMessage": false, "showCommonLabels": false, "showLabels": false, "showTime": true, "sortOrder": "Descending", "wrapLogMessage": false },
+      "targets": [{ "datasource": { "type": "loki", "uid": "loki" }, "expr": "{service=\"orders-service\"} |= \"order\"", "refId": "A" }]
+    },
+
+    {
+      "id": 333, "type": "logs",
+      "title": "Pagos Procesados",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 46 },
+      "options": { "dedupStrategy": "none", "enableLogDetails": true, "prettifyLogMessage": false, "showCommonLabels": false, "showLabels": false, "showTime": true, "sortOrder": "Descending", "wrapLogMessage": false },
+      "targets": [{ "datasource": { "type": "loki", "uid": "loki" }, "expr": "{service=\"payments-service\"} |= \"payment\"", "refId": "A" }]
+    },
+
+    { "type": "row", "title": "🔗 Correlación Logs → Trazas", "id": 340, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 54 }, "collapsed": false },
+
+    {
+      "id": 341, "type": "logs",
+      "title": "Logs con TraceID — clic en TraceID para abrir en Tempo",
+      "description": "Haz clic en el TraceID para navegar directamente a la traza distribuida en Tempo",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 55 },
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": true,
+        "showCommonLabels": false,
+        "showLabels": true,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "{service=~\"api|products-service|cart-service|orders-service|payments-service\"} | json | traceId != \"\"",
+          "refId": "A"
+        }
+      ]
+    },
+
+    { "type": "row", "title": "🧑‍💻 User Journey — Rastreo de Sesión (X-Session-ID)", "id": 350, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 67 }, "collapsed": false },
+
+    {
+      "id": 351, "type": "stat",
+      "title": "Eventos en esta Sesión",
+      "description": "Total de líneas de log generadas por esta sesión en todos los servicios. Requiere Session ID.",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 68 },
+      "options": { "reduceOptions": { "calcs": ["sum"] }, "colorMode": "background", "graphMode": "none", "textMode": "value_and_name" },
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] } } },
+      "targets": [{ "datasource": { "type": "loki", "uid": "loki" }, "expr": "sum(count_over_time({service=~\"api|products-service|cart-service|orders-service|payments-service\"} |= \"${session_id}\" [24h]))", "queryType": "instant", "refId": "A" }]
+    },
+
+    {
+      "id": 352, "type": "stat",
+      "title": "Servicios Tocados",
+      "description": "Cuántos microservicios distintos procesaron requests de esta sesión",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 68 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] } } },
+      "targets": [{ "datasource": { "type": "loki", "uid": "loki" }, "expr": "count(count by (service) (count_over_time({service=~\"api|products-service|cart-service|orders-service|payments-service\"} |= \"${session_id}\" [24h])))", "queryType": "instant", "refId": "A" }]
+    },
+
+    {
+      "id": 353, "type": "timeseries",
+      "title": "Actividad por Servicio en esta Sesión",
+      "description": "Distribución temporal de logs por servicio para la sesión seleccionada",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 4, "w": 16, "x": 8, "y": 68 },
+      "options": { "legend": { "displayMode": "list", "placement": "right" }, "tooltip": { "mode": "multi" } },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 10, "drawStyle": "bars" } } },
+      "targets": [{ "datasource": { "type": "loki", "uid": "loki" }, "expr": "sum by (service) (count_over_time({service=~\"api|products-service|cart-service|orders-service|payments-service\"} |= \"${session_id}\" [1m]))", "legendFormat": "{{service}}", "refId": "A" }]
+    },
+
+    {
+      "id": 354, "type": "logs",
+      "title": "Journey Completo — Todos los Servicios en orden cronológico",
+      "description": "Ingresa un Session ID (ej: sess-1a2b3c) en el filtro superior para ver el journey completo del usuario a través de todos los microservicios",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 15, "w": 24, "x": 0, "y": 72 },
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": true,
+        "showCommonLabels": false,
+        "showLabels": true,
+        "showTime": true,
+        "sortOrder": "Ascending",
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "{service=~\"api|products-service|cart-service|orders-service|payments-service\"} |= \"${session_id}\"",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,265 @@
+{
+  "title": "Poleras Store · RED Metrics — Rate / Errors / Duration",
+  "uid": "ecommerce-apm-v1",
+  "description": "RED Method para los 5 microservicios: tráfico (RPS), tasa de errores (%) y latencia (P50/P95/P99). Vista operacional principal para guardia/oncall. Usa la barra de navegación superior para ir a SLO, Logs o Trazas.",
+  "tags": ["ecommerce", "red-method", "production"],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "links": [
+    { "title": "SLO — Error Budget", "url": "/d/ecommerce-slo-v1", "type": "link", "icon": "external link", "tooltip": "Error Budget y Burn Rate por SLO", "keepTime": true, "targetBlank": false },
+    { "title": "Logs", "url": "/d/ecommerce-logs-v1", "type": "link", "icon": "external link", "tooltip": "Error Streams y correlación con trazas", "keepTime": true, "targetBlank": false },
+    { "title": "Distributed Tracing", "url": "/d/ecommerce-traces-v1", "type": "link", "icon": "external link", "tooltip": "Service Map y trazas end-to-end", "keepTime": true, "targetBlank": false }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "service",
+        "label": "Servicio",
+        "type": "custom",
+        "current": { "value": ".*", "text": "Todos" },
+        "options": [
+          { "value": ".*", "text": "Todos" },
+          { "value": "users-api", "text": "users-api" },
+          { "value": "products-service", "text": "products-service" },
+          { "value": "cart-service", "text": "cart-service" },
+          { "value": "orders-service", "text": "orders-service" },
+          { "value": "payments-service", "text": "payments-service" }
+        ],
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+
+    { "type": "row", "title": "⚡ Visión General", "id": 100, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }, "collapsed": false },
+
+    {
+      "id": 1, "type": "stat", "title": "RPS Total",
+      "description": "Requests por segundo — todos los servicios",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "unit": "reqps", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(http_requests_total{job=~\"users-api|products-service|cart-service|orders-service|payments-service\"}[1m]))", "refId": "A" }]
+    },
+
+    {
+      "id": 2, "type": "stat", "title": "Tasa de Errores 5xx",
+      "description": "% de requests con error 5xx",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "unit": "percent", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 5 }] } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "100 * sum(rate(http_requests_total{job=~\"users-api|products-service|cart-service|orders-service|payments-service\", status_code=~\"5..\"}[5m])) / sum(rate(http_requests_total{job=~\"users-api|products-service|cart-service|orders-service|payments-service\"}[5m]))", "refId": "A" }]
+    },
+
+    {
+      "id": 3, "type": "stat", "title": "Latencia P95 Global",
+      "description": "Percentil 95 de duración — todos los servicios",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "unit": "s", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 0.5 }, { "color": "red", "value": 1 }] } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{job=~\"users-api|products-service|cart-service|orders-service|payments-service\"}[5m])))", "refId": "A" }]
+    },
+
+    {
+      "id": 4, "type": "stat", "title": "Latencia P50 Global",
+      "description": "Mediana de duración — todos los servicios",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 1 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "unit": "s", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 0.2 }, { "color": "red", "value": 0.5 }] } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "histogram_quantile(0.50, sum by (le) (rate(http_request_duration_seconds_bucket{job=~\"users-api|products-service|cart-service|orders-service|payments-service\"}[5m])))", "refId": "A" }]
+    },
+
+    {
+      "id": 5, "type": "stat", "title": "Servicios Activos",
+      "description": "Servicios que responden en /health",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 1 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "unit": "none", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 3 }, { "color": "green", "value": 5 }] } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "count(up{job=~\"users-api|products-service|cart-service|orders-service|payments-service\"} == 1)", "refId": "A" }]
+    },
+
+    {
+      "id": 6, "type": "stat", "title": "Errores último 5m",
+      "description": "Total de requests con status 5xx en 5 minutos",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 1 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "unit": "none", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 10 }] } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(increase(http_requests_total{job=~\"users-api|products-service|cart-service|orders-service|payments-service\", status_code=~\"5..\"}[5m]))", "refId": "A" }]
+    },
+
+    { "type": "row", "title": "📈 Rate — Tráfico por Servicio", "id": 101, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 }, "collapsed": false },
+
+    {
+      "id": 10, "type": "timeseries",
+      "title": "Requests por Segundo — por Servicio",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 6 },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max", "last"] }, "tooltip": { "mode": "multi" } },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "lineWidth": 2, "fillOpacity": 5, "drawStyle": "line", "lineInterpolation": "smooth", "spanNulls": true } } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (job) (rate(http_requests_total{job=~\"users-api|products-service|cart-service|orders-service|payments-service\"}[1m]))", "legendFormat": "{{job}}", "refId": "A" }
+      ]
+    },
+
+    {
+      "id": 11, "type": "bargauge",
+      "title": "RPS Actual por Servicio",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 6 },
+      "options": { "orientation": "horizontal", "reduceOptions": { "calcs": ["lastNotNull"] }, "displayMode": "gradient", "valueMode": "color" },
+      "fieldConfig": { "defaults": { "unit": "reqps", "color": { "mode": "palette-classic" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] } } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (job) (rate(http_requests_total{job=~\"users-api|products-service|cart-service|orders-service|payments-service\"}[1m]))", "legendFormat": "{{job}}", "refId": "A" }
+      ]
+    },
+
+    { "type": "row", "title": "🚨 Errors — Tasa de Errores", "id": 102, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 }, "collapsed": false },
+
+    {
+      "id": 20, "type": "timeseries",
+      "title": "Tasa de Errores 5xx por Servicio",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 15 },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max", "last"] }, "tooltip": { "mode": "multi" } },
+      "fieldConfig": { "defaults": { "unit": "percent", "custom": { "lineWidth": 2, "fillOpacity": 15, "drawStyle": "line", "lineInterpolation": "smooth" }, "color": { "mode": "palette-classic" } } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "100 * sum by (job) (rate(http_requests_total{job=~\"users-api|products-service|cart-service|orders-service|payments-service\", status_code=~\"5..\"}[1m])) / sum by (job) (rate(http_requests_total{job=~\"users-api|products-service|cart-service|orders-service|payments-service\"}[1m]))", "legendFormat": "{{job}}", "refId": "A" }
+      ]
+    },
+
+    {
+      "id": 21, "type": "timeseries",
+      "title": "Requests por Status Code",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 15 },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["last"] }, "tooltip": { "mode": "multi" } },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "lineWidth": 2, "fillOpacity": 10 } },
+        "overrides": [
+          { "matcher": { "id": "byRegexp", "options": ".*2.." }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }] },
+          { "matcher": { "id": "byRegexp", "options": ".*4.." }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }] },
+          { "matcher": { "id": "byRegexp", "options": ".*5.." }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] }
+        ]
+      },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (status_code) (rate(http_requests_total{job=~\"users-api|products-service|cart-service|orders-service|payments-service\"}[1m]))", "legendFormat": "HTTP {{status_code}}", "refId": "A" }
+      ]
+    },
+
+    { "type": "row", "title": "⏱ Duration — Latencia", "id": 103, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 22 }, "collapsed": false },
+
+    {
+      "id": 30, "type": "timeseries",
+      "title": "Latencia P50 / P95 / P99 — Todos los Servicios",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 23 },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max", "last"] }, "tooltip": { "mode": "multi" } },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "lineWidth": 2, "fillOpacity": 5, "drawStyle": "line", "lineInterpolation": "smooth" } },
+        "overrides": [
+          { "matcher": { "id": "byRegexp", "options": ".*P99.*" }, "properties": [{ "id": "custom.lineWidth", "value": 3 }] }
+        ]
+      },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "histogram_quantile(0.50, sum by (le, job) (rate(http_request_duration_seconds_bucket{job=~\"users-api|products-service|cart-service|orders-service|payments-service\"}[2m])))", "legendFormat": "P50 {{job}}", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "histogram_quantile(0.95, sum by (le, job) (rate(http_request_duration_seconds_bucket{job=~\"users-api|products-service|cart-service|orders-service|payments-service\"}[2m])))", "legendFormat": "P95 {{job}}", "refId": "B" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "histogram_quantile(0.99, sum by (le, job) (rate(http_request_duration_seconds_bucket{job=~\"users-api|products-service|cart-service|orders-service|payments-service\"}[2m])))", "legendFormat": "P99 {{job}}", "refId": "C" }
+      ]
+    },
+
+    {
+      "id": 31, "type": "bargauge",
+      "title": "P95 Latencia Actual por Servicio",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 23 },
+      "options": { "orientation": "horizontal", "reduceOptions": { "calcs": ["lastNotNull"] }, "displayMode": "gradient", "valueMode": "color" },
+      "fieldConfig": { "defaults": { "unit": "s", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 0.3 }, { "color": "red", "value": 1 }] } } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "histogram_quantile(0.95, sum by (le, job) (rate(http_request_duration_seconds_bucket{job=~\"users-api|products-service|cart-service|orders-service|payments-service\"}[5m])))", "legendFormat": "{{job}}", "refId": "A" }
+      ]
+    },
+
+    {
+      "id": 32, "type": "heatmap",
+      "title": "Mapa de Calor — Distribución de Latencia",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 31 },
+      "options": { "calculate": false, "color": { "mode": "scheme", "scheme": "Oranges", "fill": "opacity" }, "tooltip": { "mode": "single", "showHistogram": true } },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "scaleDistribution": { "type": "log", "log": 2 } } } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (le) (rate(http_request_duration_seconds_bucket{job=~\"users-api|products-service|cart-service|orders-service|payments-service\"}[2m]))", "format": "heatmap", "legendFormat": "{{le}}", "refId": "A" }
+      ]
+    },
+
+    { "type": "row", "title": "🛒 Métricas de Negocio E-commerce", "id": 104, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 39 }, "collapsed": false },
+
+    {
+      "id": 40, "type": "stat", "title": "Intentos de Login",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 40 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(increase(auth_login_attempts_total{job=\"users-api\"}[1h]))", "refId": "A" }]
+    },
+
+    {
+      "id": 41, "type": "stat", "title": "Usuarios Creados",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 40 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(increase(auth_registrations_total{job=\"users-api\"}[1h]))", "refId": "A" }]
+    },
+
+    {
+      "id": 42, "type": "timeseries",
+      "title": "Tráfico de Negocio — Registro/Login/Catálogo/Carrito/Pedidos",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 44 },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "last"] }, "tooltip": { "mode": "multi" } },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "lineWidth": 2, "fillOpacity": 8 } } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "rate(http_requests_total{job=\"users-api\", route=~\"/api/auth/.*\"}[1m])", "legendFormat": "Auth: {{route}}", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "rate(http_requests_total{job=\"products-service\", route=~\"/api/products.*\"}[1m])", "legendFormat": "Products: {{route}}", "refId": "B" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "rate(http_requests_total{job=\"cart-service\", route=~\"/api/cart.*\"}[1m])", "legendFormat": "Cart: {{route}}", "refId": "C" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "rate(http_requests_total{job=\"orders-service\", route=~\"/api/orders.*\"}[1m])", "legendFormat": "Orders: {{route}}", "refId": "D" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "rate(http_requests_total{job=\"payments-service\", route=~\"/api/payments.*\"}[1m])", "legendFormat": "Payments: {{route}}", "refId": "E" }
+      ]
+    },
+
+    { "type": "row", "title": "📊 Saturation — Node.js Heap / Event Loop", "id": 105, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 52 }, "collapsed": true,
+      "panels": [
+        {
+          "id": 50, "type": "timeseries",
+          "title": "Uso de Heap (Node.js)",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 7, "w": 12, "x": 0, "y": 53 },
+          "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+          "fieldConfig": { "defaults": { "unit": "bytes", "custom": { "fillOpacity": 10 } } },
+          "targets": [
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "nodejs_heap_size_used_bytes{job=~\"users-api|products-service|cart-service|orders-service|payments-service\"}", "legendFormat": "{{job}}", "refId": "A" }
+          ]
+        },
+        {
+          "id": 51, "type": "timeseries",
+          "title": "Event Loop Lag P99",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 7, "w": 12, "x": 12, "y": 53 },
+          "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+          "fieldConfig": { "defaults": { "unit": "s", "custom": { "fillOpacity": 10 } } },
+          "targets": [
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "nodejs_eventloop_lag_p99_seconds{job=~\"users-api|products-service|cart-service|orders-service|payments-service\"}", "legendFormat": "{{job}}", "refId": "A" }
+          ]
+        }
+      ]
+    }
+  ]
+}

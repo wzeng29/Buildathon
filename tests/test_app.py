@@ -12,7 +12,8 @@ from pathlib import Path
 from config import _is_real_value
 from src.agent import BuildAgents, format_slack_response
 from src.command_parser import parse_action_request, parse_contextual_action_request
-from src.connectors import AS400ManualConnector, BaseConnector, build_connectors, ConfluenceConnector, GrafanaConnector, JiraConnector, JiraPerformanceWorkflowConnector, K6TestConnector, K6WorkflowConnector
+from src.connectors import AS400ManualConnector, BaseConnector, build_connectors, ConfluenceConnector, GrafanaConnector, JiraConnector, JiraPerformanceWorkflowConnector, K6TestConnector, K6WorkflowConnector, TicketPerformancePlan, WorkflowDecision
+from src.llm import OpenAIResponder
 from src.mcp_adapter import MCPAdapter
 from src.memory import RedisConversationMemory
 from src.multi_agent import RequirementUnderstandingAgent
@@ -26,6 +27,7 @@ from src.slack_app import (
     _is_allowed_channel,
     _is_supported_event,
     _normalize_question,
+    _upload_html_report_if_available,
     handle_slack_event,
     process_socket_mode_request,
 )
@@ -81,10 +83,28 @@ class StubConnector(BaseConnector):
         )
 
 
+class RunStubConnector(StubConnector):
+    def execute(self, request: ActionRequest) -> ActionResult:
+        self.executed_requests.append(request)
+        document = SearchDocument(
+            source_type=self.source_type,
+            title=f"{self.source_type.upper()}-{request.identifier or '1'}",
+            url=f"https://example.com/{self.source_type}/1",
+            content="stub workflow result",
+            metadata=request.fields,
+        )
+        return ActionResult(
+            success=True,
+            message=f"Executed {request.target_system} {request.target_type}.",
+            document=document,
+        )
+
+
 class StubResponder:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, list[dict[str, str]]]] = []
         self.completions: list[tuple[str, str, float]] = []
+        self.function_calls: list[tuple[str, str, str, str, dict, float]] = []
 
     def generate(
         self,
@@ -103,6 +123,20 @@ class StubResponder:
     ) -> str:
         self.completions.append((system_prompt, user_prompt, temperature))
         return ""
+
+    def call_function(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        function_name: str,
+        function_description: str,
+        parameters: dict,
+        temperature: float = 0.1,
+    ) -> dict:
+        self.function_calls.append(
+            (system_prompt, user_prompt, function_name, function_description, parameters, temperature)
+        )
+        return {}
 
 
 class FakeJiraWorkflowDependency:
@@ -458,6 +492,51 @@ class AgentTests(unittest.TestCase):
             self.assertIn("2026-04-13_bot_auth/auth-summary.json", document.content)
             self.assertIn("Latency p95: current=90 baseline=60 delta=+50.00%", document.content)
             self.assertIn("git add results/2026-04-14_bot_auth", document.content)
+        finally:
+            if project_root.exists():
+                shutil.rmtree(project_root)
+
+    def test_k6_workspace_report_derives_rate_from_pass_fail_metrics(self) -> None:
+        project_root = Path("tests") / ".tmp_k6_metric_normalization"
+        if project_root.exists():
+            shutil.rmtree(project_root)
+        try:
+            summary_dir = project_root / "results" / "2026-04-18_bot_payments"
+            summary_dir.mkdir(parents=True)
+            summary_path = summary_dir / "payments-summary.json"
+            summary_path.write_text(
+                """
+                {
+                  "metrics": {
+                    "http_req_duration": { "avg": 2.498, "p(95)": 3.8026 },
+                    "checks": { "passes": 42, "fails": 42, "value": 0.5 },
+                    "http_req_failed": { "passes": 42, "fails": 0, "value": 1 },
+                    "iterations": { "count": 42 },
+                    "http_reqs": { "count": 42 }
+                  }
+                }
+                """.strip(),
+                encoding="utf-8",
+            )
+            (project_root / "tests" / "payments").mkdir(parents=True)
+            (project_root / "tests" / "payments" / "payments.test.js").write_text(
+                "export default function () {}",
+                encoding="utf-8",
+            )
+
+            workspace = K6Workspace(str(project_root))
+            document = workspace.generate_report_with_context(
+                "payments",
+                summary_path=summary_path,
+                workflow_context={"jira_issue": "KAN-5", "dataset": "users.json"},
+            )
+
+            self.assertIn("Checks pass rate: 0.5", document.content)
+            self.assertIn("HTTP failure rate: 0", document.content)
+            self.assertIn("failure rate=0", document.content)
+            self.assertIn("check pass rate=0.5", document.content)
+            self.assertIn("HTTP request p(95): 3.8026 ms", document.content)
+            self.assertIn("The run finished with p95=3.8026 ms", document.content)
         finally:
             if project_root.exists():
                 shutil.rmtree(project_root)
@@ -1403,6 +1482,64 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(request.target_type, "workflow")
         self.assertEqual(request.identifier, "KAN-5")
 
+    def test_llm_intent_routes_natural_jira_workflow_request(self) -> None:
+        responder = StubResponder()
+
+        def staged_call_function(
+            system_prompt: str,
+            user_prompt: str,
+            function_name: str,
+            function_description: str,
+            parameters: dict,
+            temperature: float = 0.1,
+        ) -> dict:
+            responder.function_calls.append(
+                (system_prompt, user_prompt, function_name, function_description, parameters, temperature)
+            )
+            if function_name == "classify_action_request":
+                return {
+                    "is_action": True,
+                    "operation": "run",
+                    "target_system": "jira",
+                    "target_type": "workflow",
+                    "identifier": "KAN-4",
+                    "fields": {},
+                }
+            return {}
+
+        responder.call_function = staged_call_function
+        connector = RunStubConnector("jira", "workflow")
+        agent = BuildAgents(
+            connectors=[connector],
+            responder=responder,
+        )
+
+        result = agent.answer("generate test plan, script for KAN-4 and get me the test results")
+
+        self.assertEqual(result.answer, "Executed jira workflow.")
+        self.assertEqual(connector.executed_requests[-1].identifier, "KAN-4")
+
+    def test_deterministic_fallback_routes_natural_jira_workflow_request_when_llm_returns_no_action(self) -> None:
+        responder = StubResponder()
+        responder.call_function = lambda *args, **kwargs: {
+            "is_action": False,
+            "operation": "read",
+            "target_system": "jira",
+            "target_type": "ticket",
+            "identifier": "",
+            "fields": {},
+        }
+        connector = RunStubConnector("jira", "workflow")
+        agent = BuildAgents(
+            connectors=[connector],
+            responder=responder,
+        )
+
+        result = agent.answer("generate test plan and k6 script for kan-4, and get the performance result")
+
+        self.assertEqual(result.answer, "Executed jira workflow.")
+        self.assertEqual(connector.executed_requests[-1].identifier, "KAN-4")
+
     def test_contextual_action_request_resolves_close_it_from_last_ticket(self) -> None:
         reference = SearchDocument(
             source_type="jira",
@@ -1435,6 +1572,73 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(jira.executed_requests[0].fields["status"], "In Progress")
         self.assertEqual(confluence.executed_requests, [])
 
+    def test_openai_responder_call_function_parses_tool_arguments(self) -> None:
+        responder = OpenAIResponder()
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "id": "call_123",
+                                "type": "function",
+                                "function": {
+                                    "name": "decide_ticket_workflow",
+                                    "arguments": '{"ordered_skills":["k6-best-practices"]}',
+                                },
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+        with patch("src.llm.requests.post", return_value=response) as post_mock:
+            payload = responder.call_function(
+                system_prompt="Pick a skill.",
+                user_prompt="Ticket content",
+                function_name="decide_ticket_workflow",
+                function_description="Pick the skills.",
+                parameters={
+                    "type": "object",
+                    "properties": {"ordered_skills": {"type": "array", "items": {"type": "string"}}},
+                    "required": ["ordered_skills"],
+                },
+            )
+
+        self.assertEqual(payload["ordered_skills"], ["k6-best-practices"])
+        self.assertEqual(post_mock.call_args.kwargs["json"]["tool_choice"]["function"]["name"], "decide_ticket_workflow")
+
+    def test_jira_workflow_still_fails_without_model_decision_or_perf_signal(self) -> None:
+        ticket = SearchDocument(
+            source_type="jira",
+            title="DEV-88: Update auth copy",
+            url="https://jira.local/browse/DEV-88",
+            content="Update the user-facing login page copy for clarity.",
+            metadata={"key": "DEV-88"},
+        )
+        responder = StubResponder()
+        connector = JiraPerformanceWorkflowConnector(
+            jira_connector=FakeJiraWorkflowDependency(ticket),  # type: ignore[arg-type]
+            workspace=K6Workspace(),
+            skill_catalog=ProjectSkillCatalog(),
+            responder=responder,  # type: ignore[arg-type]
+        )
+
+        result = connector.execute(
+            ActionRequest(
+                operation="run",
+                target_system="jira",
+                target_type="workflow",
+                identifier="DEV-88",
+            )
+        )
+
+        self.assertFalse(result.success)
+        self.assertIn("Could not determine workflow decision", result.message)
+        self.assertEqual(len(responder.function_calls), 1)
+
     def test_jira_performance_workflow_generates_script_runs_and_comments(self) -> None:
         project_root = Path("tests") / ".tmp_jira_perf_workflow"
         if project_root.exists():
@@ -1463,22 +1667,44 @@ class AgentTests(unittest.TestCase):
             )
             jira_dependency = FakeJiraWorkflowDependency(ticket)
             responder = StubResponder()
+            def staged_call_function(
+                system_prompt: str,
+                user_prompt: str,
+                function_name: str,
+                function_description: str,
+                parameters: dict,
+                temperature: float = 0.1,
+            ) -> dict:
+                responder.function_calls.append(
+                    (system_prompt, user_prompt, function_name, function_description, parameters, temperature)
+                )
+                if function_name == "decide_ticket_workflow":
+                    return {
+                        "execution_mode": "plan_then_run",
+                        "ordered_skills": ["performance-testing-strategy", "k6-best-practices"],
+                        "rationale": [
+                            "The ticket defines workload and SLA details first.",
+                            "The ticket then needs a runnable k6 script.",
+                        ],
+                    }
+                if function_name == "extract_ticket_performance_plan":
+                    return {
+                        "service": "auth",
+                        "endpoint_method": "POST",
+                        "endpoint_path": "/api/auth/login",
+                        "sla_p95_ms": 450,
+                        "error_rate_percent": 0.5,
+                        "vus": 2,
+                        "duration": "30s",
+                        "dataset": "users.json",
+                        "test_type": "load",
+                        "criteria": ["Validate 200 responses", "Validate token exists"],
+                        "strategy_notes": ["Smoke before load.", "Use realistic user credentials."],
+                    }
+                return {}
+
             def staged_complete(system_prompt: str, user_prompt: str, temperature: float = 0.2) -> str:
                 responder.completions.append((system_prompt, user_prompt, temperature))
-                if "Return JSON with keys" in user_prompt:
-                    return """{
-  "service": "auth",
-  "endpoint_method": "POST",
-  "endpoint_path": "/api/auth/login",
-  "sla_p95_ms": 450,
-  "error_rate_percent": 0.5,
-  "vus": 2,
-  "duration": "30s",
-  "dataset": "users.json",
-  "test_type": "load",
-  "criteria": ["Validate 200 responses", "Validate token exists"],
-  "strategy_notes": ["Smoke before load.", "Use realistic user credentials."]
-}"""
                 if "Return only raw JavaScript" in system_prompt:
                     return """import http from 'k6/http';
 import { check, group, sleep } from 'k6';
@@ -1559,6 +1785,7 @@ export function handleSummary(data) {
 }
 """
                 return "## Skill-Driven Technical Analysis\n\n- Technical analysis generated from eval-backed prompts.\n\n## Skill-Driven Business Analysis\n\n- Business analysis generated from eval-backed prompts."
+            responder.call_function = staged_call_function
             responder.complete = staged_complete
             connector = JiraPerformanceWorkflowConnector(
                 jira_connector=jira_dependency,  # type: ignore[arg-type]
@@ -1574,6 +1801,7 @@ export function handleSummary(data) {
                 {
                   "metrics": {
                     "http_req_duration": { "avg": 120, "p(95)": 240 },
+                    "checks": { "passes": 80, "fails": 0, "value": 1 },
                     "http_req_failed": { "rate": 0.001 },
                     "http_reqs": { "count": 80 }
                   }
@@ -1607,16 +1835,352 @@ export function handleSummary(data) {
             self.assertIn("SharedArray", generated_text)
             self.assertIn("http_req_duration{service:auth}", generated_text)
             self.assertIn("/api/auth/login", generated_text)
-            self.assertEqual(len(responder.completions), 2)
+            self.assertEqual(len(responder.function_calls), 2)
+            self.assertEqual(len(responder.completions), 1)
             self.assertIn("docs/skills/performance-testing-strategy", result.message)
             self.assertIn("docs/skills/k6-best-practices", result.message)
             self.assertNotIn("docs/skills/performance-report-analysis", result.message)
+            self.assertIn(
+                "Playbooks: docs/skills/performance-testing-strategy, docs/skills/k6-best-practices.",
+                result.message,
+            )
             self.assertIn("Report:", result.message)
             self.assertIn("Slack Report Preview:", result.message)
             self.assertIn("## Executive Summary", result.message)
             self.assertEqual(jira_dependency.comments[0][0], "DEV-42")
             self.assertIn("k6 best practices skill used to generate the runnable script", jira_dependency.comments[0][1])
             self.assertNotIn("Performance report analysis skill used to produce the final report.", jira_dependency.comments[0][1])
+        finally:
+            if project_root.exists():
+                shutil.rmtree(project_root)
+
+    def test_jira_workflow_fallback_decision_can_run_concrete_ticket(self) -> None:
+        project_root = Path("tests") / ".tmp_jira_perf_workflow_fallback"
+        if project_root.exists():
+            shutil.rmtree(project_root)
+        try:
+            script_seed = project_root / "tests" / "auth" / "auth.test.js"
+            script_seed.parent.mkdir(parents=True)
+            script_seed.write_text("export default function () {}", encoding="utf-8")
+            workspace = K6Workspace(str(project_root))
+            ticket = SearchDocument(
+                source_type="jira",
+                title="KAN-7: Auth login load test",
+                url="https://jira.local/browse/KAN-7",
+                content=(
+                    "Service: auth\n"
+                    "Endpoint: POST /api/auth/login\n"
+                    "SLA: p95 < 450ms\n"
+                    "Error rate < 0.5%\n"
+                    "VUs: 2\n"
+                    "Duration: 30s\n"
+                    "Please generate and run the k6 workflow.\n"
+                ),
+                metadata={"key": "KAN-7"},
+            )
+            jira_dependency = FakeJiraWorkflowDependency(ticket)
+            responder = StubResponder()
+
+            def staged_call_function(
+                system_prompt: str,
+                user_prompt: str,
+                function_name: str,
+                function_description: str,
+                parameters: dict,
+                temperature: float = 0.1,
+            ) -> dict:
+                responder.function_calls.append(
+                    (system_prompt, user_prompt, function_name, function_description, parameters, temperature)
+                )
+                if function_name == "extract_ticket_performance_plan":
+                    return {
+                        "service": "auth",
+                        "endpoint_method": "POST",
+                        "endpoint_path": "/api/auth/login",
+                        "sla_p95_ms": 450,
+                        "error_rate_percent": 0.5,
+                        "vus": 2,
+                        "duration": "30s",
+                        "dataset": "users.json",
+                        "test_type": "load",
+                        "criteria": ["Validate 200 responses"],
+                        "strategy_notes": ["Run a smoke check before load."],
+                    }
+                return {}
+
+            def staged_complete(system_prompt: str, user_prompt: str, temperature: float = 0.2) -> str:
+                responder.completions.append((system_prompt, user_prompt, temperature))
+                if "Return only raw JavaScript" in system_prompt:
+                    return """import http from 'k6/http';
+import { check, sleep } from 'k6';
+
+export const options = {
+  thresholds: {
+    'http_req_duration{service:auth}': ['p(95)<450'],
+  },
+};
+
+export default function () {
+  const res = http.post(`${__ENV.BASE_URL || 'http://127.0.0.1:3001'}/api/auth/login`, JSON.stringify({ username: 'u', password: 'p' }));
+  check(res, { 'status 200': (r) => r.status === 200 });
+  sleep(1);
+}
+"""
+                return "## Skill-Driven Technical Analysis\n\n- Fallback workflow completed."
+
+            responder.call_function = staged_call_function
+            responder.complete = staged_complete
+            connector = JiraPerformanceWorkflowConnector(
+                jira_connector=jira_dependency,  # type: ignore[arg-type]
+                workspace=workspace,
+                skill_catalog=ProjectSkillCatalog(),
+                responder=responder,  # type: ignore[arg-type]
+            )
+            summary_dir = project_root / "results" / "2026-04-18_bot_auth"
+            summary_dir.mkdir(parents=True)
+            summary_path = summary_dir / "auth-summary.json"
+            summary_path.write_text(
+                """
+                {
+                  "metrics": {
+                    "http_req_duration": { "avg": 120, "p(95)": 240 },
+                    "checks": { "passes": 80, "fails": 0, "value": 1 },
+                    "http_req_failed": { "rate": 0.001 },
+                    "http_reqs": { "count": 80 }
+                  }
+                }
+                """.strip(),
+                encoding="utf-8",
+            )
+            run_result = MagicMock(
+                exit_code=0,
+                summary_path=summary_path,
+                dashboard_path=summary_dir / "auth-dashboard.html",
+                stdout="ok",
+                stderr="",
+                run_dir=summary_dir,
+                script_path=project_root / "tests" / "auth" / "auth.kan-7.test.js",
+            )
+            with patch.object(workspace, "run_script", return_value=run_result):
+                result = connector.execute(
+                    ActionRequest(
+                        operation="run",
+                        target_system="jira",
+                        target_type="workflow",
+                        identifier="KAN-7",
+                    )
+                )
+
+            self.assertTrue(result.success)
+            self.assertEqual(len(responder.function_calls), 2)
+            self.assertIn("Completed Jira performance workflow for KAN-7.", result.message)
+            self.assertIn("docs/skills/performance-testing-strategy", result.message)
+            self.assertIn("docs/skills/k6-best-practices", result.message)
+            self.assertNotIn("docs/skills/performance-report-analysis", result.message)
+        finally:
+            if project_root.exists():
+                shutil.rmtree(project_root)
+
+    def test_jira_workflow_fallback_plan_recovers_payments_ticket_shape(self) -> None:
+        project_root = Path("tests") / ".tmp_jira_perf_workflow_plan_fallback"
+        if project_root.exists():
+            shutil.rmtree(project_root)
+        try:
+            script_seed = project_root / "tests" / "payments" / "payments.test.js"
+            script_seed.parent.mkdir(parents=True)
+            script_seed.write_text("export default function () {}", encoding="utf-8")
+            workspace = K6Workspace(str(project_root))
+            ticket = SearchDocument(
+                source_type="jira",
+                title="KAN-5: Develop payment script",
+                url="https://jira.local/browse/KAN-5",
+                content=(
+                    "Interface: POST http://localhost:3005/api/payments/process\n"
+                    "Scenarios: approved / rejected\n"
+                    "Tag { service: 'payments' }\n"
+                    "Thresholds reference KAN-4: P95 < 800ms, error rate < 0.1%\n"
+                    "Suggested split: 80% approved / 20% rejected\n"
+                    "traceparent propagated - unified trace visible in Tempo\n"
+                ),
+                metadata={"key": "KAN-5"},
+            )
+            jira_dependency = FakeJiraWorkflowDependency(ticket)
+            responder = StubResponder()
+
+            def staged_call_function(
+                system_prompt: str,
+                user_prompt: str,
+                function_name: str,
+                function_description: str,
+                parameters: dict,
+                temperature: float = 0.1,
+            ) -> dict:
+                responder.function_calls.append(
+                    (system_prompt, user_prompt, function_name, function_description, parameters, temperature)
+                )
+                if function_name == "decide_ticket_workflow":
+                    return {
+                        "execution_mode": "plan_then_run",
+                        "ordered_skills": ["performance-testing-strategy", "k6-best-practices"],
+                        "rationale": ["Concrete payment endpoint and SLA are present in the ticket."],
+                    }
+                return {}
+
+            def staged_complete(system_prompt: str, user_prompt: str, temperature: float = 0.2) -> str:
+                responder.completions.append((system_prompt, user_prompt, temperature))
+                return ""
+
+            responder.call_function = staged_call_function
+            responder.complete = staged_complete
+            connector = JiraPerformanceWorkflowConnector(
+                jira_connector=jira_dependency,  # type: ignore[arg-type]
+                workspace=workspace,
+                skill_catalog=ProjectSkillCatalog(),
+                responder=responder,  # type: ignore[arg-type]
+            )
+            summary_dir = project_root / "results" / "2026-04-18_bot_payments"
+            summary_dir.mkdir(parents=True)
+            summary_path = summary_dir / "payments-summary.json"
+            summary_path.write_text(
+                """
+                {
+                  "metrics": {
+                    "http_req_duration": { "p(95)": 700, "avg": 500 },
+                    "checks": { "passes": 80, "fails": 0, "value": 1 },
+                    "http_req_failed": { "passes": 80, "fails": 0, "value": 1 },
+                    "http_reqs": { "count": 80 }
+                  }
+                }
+                """.strip(),
+                encoding="utf-8",
+            )
+            run_result = MagicMock(
+                exit_code=0,
+                summary_path=summary_path,
+                dashboard_path=summary_dir / "payments-dashboard.html",
+                stdout="ok",
+                stderr="",
+                run_dir=summary_dir,
+                script_path=project_root / "tests" / "payments" / "payments.kan-5.test.js",
+            )
+            with patch.object(workspace, "run_script", return_value=run_result):
+                result = connector.execute(
+                    ActionRequest(
+                        operation="run",
+                        target_system="jira",
+                        target_type="workflow",
+                        identifier="KAN-5",
+                    )
+                )
+
+            self.assertTrue(result.success)
+            generated_script = project_root / "tests" / "payments" / "payments.kan-5.test.js"
+            self.assertTrue(generated_script.exists())
+            generated_text = generated_script.read_text(encoding="utf-8")
+            self.assertIn("http://127.0.0.1:3005", generated_text)
+            self.assertIn("/api/payments/process", generated_text)
+            self.assertIn("service: 'payments'", generated_text)
+            self.assertIn("p(95)<800", generated_text)
+            self.assertIn("rate<0.001000", generated_text)
+            self.assertIn("Plan recovered deterministically from Jira text", result.document.content)
+        finally:
+            if project_root.exists():
+                shutil.rmtree(project_root)
+
+    def test_jira_workflow_failed_checks_block_pass_decision(self) -> None:
+        project_root = Path("tests") / ".tmp_jira_failed_checks"
+        if project_root.exists():
+            shutil.rmtree(project_root)
+        try:
+            script_seed = project_root / "tests" / "payments" / "payments.test.js"
+            script_seed.parent.mkdir(parents=True)
+            script_seed.write_text("export default function () {}", encoding="utf-8")
+            workspace = K6Workspace(str(project_root))
+            ticket = SearchDocument(
+                source_type="jira",
+                title="KAN-5: Develop payment script",
+                url="https://jira.local/browse/KAN-5",
+                content=(
+                    "Interface: POST http://localhost:3005/api/payments/process\n"
+                    "Tag { service: 'payments' }\n"
+                    "P95 < 800ms\n"
+                    "error rate < 0.1%\n"
+                ),
+                metadata={"key": "KAN-5"},
+            )
+            jira_dependency = FakeJiraWorkflowDependency(ticket)
+            responder = StubResponder()
+
+            def staged_call_function(
+                system_prompt: str,
+                user_prompt: str,
+                function_name: str,
+                function_description: str,
+                parameters: dict,
+                temperature: float = 0.1,
+            ) -> dict:
+                responder.function_calls.append(
+                    (system_prompt, user_prompt, function_name, function_description, parameters, temperature)
+                )
+                if function_name == "decide_ticket_workflow":
+                    return {
+                        "execution_mode": "plan_then_run",
+                        "ordered_skills": ["performance-testing-strategy", "k6-best-practices"],
+                        "rationale": ["Concrete payment endpoint and SLA are present in the ticket."],
+                    }
+                return {}
+
+            responder.call_function = staged_call_function
+            responder.complete = lambda *args, **kwargs: ""
+            connector = JiraPerformanceWorkflowConnector(
+                jira_connector=jira_dependency,  # type: ignore[arg-type]
+                workspace=workspace,
+                skill_catalog=ProjectSkillCatalog(),
+                responder=responder,  # type: ignore[arg-type]
+            )
+            summary_dir = project_root / "results" / "2026-04-18_bot_payments"
+            summary_dir.mkdir(parents=True)
+            summary_path = summary_dir / "payments-summary.json"
+            summary_path.write_text(
+                """
+                {
+                  "metrics": {
+                    "http_req_duration": { "p(95)": 3.8026, "avg": 2.4980 },
+                    "checks": { "passes": 42, "fails": 42, "value": 0.5 },
+                    "http_req_failed": { "passes": 42, "fails": 0, "value": 1 },
+                    "http_reqs": { "count": 42 }
+                  }
+                }
+                """.strip(),
+                encoding="utf-8",
+            )
+            run_result = MagicMock(
+                exit_code=0,
+                summary_path=summary_path,
+                dashboard_path=summary_dir / "payments-dashboard.html",
+                stdout="ok",
+                stderr="",
+                run_dir=summary_dir,
+                script_path=project_root / "tests" / "payments" / "payments.kan-5.test.js",
+            )
+            with patch.object(workspace, "run_script", return_value=run_result):
+                result = connector.execute(
+                    ActionRequest(
+                        operation="run",
+                        target_system="jira",
+                        target_type="workflow",
+                        identifier="KAN-5",
+                    )
+                )
+
+            self.assertFalse(result.success)
+            self.assertIn("Checks pass rate: 0.5", result.document.content)
+            self.assertIn("HTTP failure rate: 0", result.document.content)
+            self.assertIn("Acceptance checks: pass rate = 0.5.", result.document.content)
+            self.assertIn("Outcome: Performance SLOs passed, but the acceptance checks did not fully pass.", result.document.content)
+            self.assertIn("Next decision: Keep the ticket open and triage the failing acceptance checks before release.", result.document.content)
+            self.assertIn("Severity: Medium.", result.document.content)
+            self.assertIn("Release risk: Moderate.", result.document.content)
         finally:
             if project_root.exists():
                 shutil.rmtree(project_root)
@@ -1648,22 +2212,49 @@ export function handleSummary(data) {
             jira_dependency = FakeJiraWorkflowDependency(ticket)
             responder = StubResponder()
 
+            def staged_call_function(
+                system_prompt: str,
+                user_prompt: str,
+                function_name: str,
+                function_description: str,
+                parameters: dict,
+                temperature: float = 0.1,
+            ) -> dict:
+                responder.function_calls.append(
+                    (system_prompt, user_prompt, function_name, function_description, parameters, temperature)
+                )
+                if function_name == "decide_ticket_workflow":
+                    return {
+                        "execution_mode": "plan_then_run",
+                        "ordered_skills": [
+                            "performance-testing-strategy",
+                            "k6-best-practices",
+                            "performance-report-analysis",
+                        ],
+                        "rationale": [
+                            "The ticket needs planning.",
+                            "It needs a runnable script.",
+                            "It explicitly asks for baseline comparison and an executive report.",
+                        ],
+                    }
+                if function_name == "extract_ticket_performance_plan":
+                    return {
+                        "service": "auth",
+                        "endpoint_method": "POST",
+                        "endpoint_path": "/api/auth/login",
+                        "sla_p95_ms": 450,
+                        "error_rate_percent": 0.5,
+                        "vus": 2,
+                        "duration": "30s",
+                        "dataset": "users.json",
+                        "test_type": "load",
+                        "criteria": ["Validate 200 responses"],
+                        "strategy_notes": ["Smoke before load."],
+                    }
+                return {}
+
             def staged_complete(system_prompt: str, user_prompt: str, temperature: float = 0.2) -> str:
                 responder.completions.append((system_prompt, user_prompt, temperature))
-                if "Return JSON with keys" in user_prompt:
-                    return """{
-  "service": "auth",
-  "endpoint_method": "POST",
-  "endpoint_path": "/api/auth/login",
-  "sla_p95_ms": 450,
-  "error_rate_percent": 0.5,
-  "vus": 2,
-  "duration": "30s",
-  "dataset": "users.json",
-  "test_type": "load",
-  "criteria": ["Validate 200 responses"],
-  "strategy_notes": ["Smoke before load."]
-}"""
                 if "Return only raw JavaScript" in system_prompt:
                     return """import http from 'k6/http';
 import { check, sleep } from 'k6';
@@ -1682,6 +2273,7 @@ export default function () {
 """
                 return "## Skill-Driven Technical Analysis\n\n- Compared against the latest baseline.\n\n## Skill-Driven Business Analysis\n\n- Executive summary included."
 
+            responder.call_function = staged_call_function
             responder.complete = staged_complete
             connector = JiraPerformanceWorkflowConnector(
                 jira_connector=jira_dependency,  # type: ignore[arg-type]
@@ -1697,6 +2289,7 @@ export default function () {
                 {
                   "metrics": {
                     "http_req_duration": { "avg": 120, "p(95)": 240 },
+                    "checks": { "passes": 80, "fails": 0, "value": 1 },
                     "http_req_failed": { "rate": 0.001 },
                     "http_reqs": { "count": 80 }
                   }
@@ -1724,9 +2317,319 @@ export default function () {
                 )
 
             self.assertTrue(result.success)
-            self.assertEqual(len(responder.completions), 3)
+            self.assertEqual(len(responder.function_calls), 2)
+            self.assertEqual(len(responder.completions), 2)
             self.assertIn("docs/skills/performance-report-analysis", result.message)
+            self.assertIn(
+                "Playbooks: docs/skills/performance-testing-strategy, docs/skills/k6-best-practices, docs/skills/performance-report-analysis.",
+                result.message,
+            )
             self.assertIn("Performance report analysis skill used to produce the final report.", jira_dependency.comments[0][1])
+        finally:
+            if project_root.exists():
+                shutil.rmtree(project_root)
+
+    def test_jira_report_calls_out_acceptance_gaps_and_weak_baseline(self) -> None:
+        project_root = Path("tests") / ".tmp_jira_acceptance_gaps"
+        if project_root.exists():
+            shutil.rmtree(project_root)
+        try:
+            script_seed = project_root / "tests" / "payments" / "payments.test.js"
+            script_seed.parent.mkdir(parents=True)
+            script_seed.write_text("export default function () {}", encoding="utf-8")
+            workspace = K6Workspace(str(project_root))
+            old_summary_dir = project_root / "results" / "2026-04-17_bot_payments"
+            new_summary_dir = project_root / "results" / "2026-04-18_bot_payments"
+            old_summary_dir.mkdir(parents=True)
+            new_summary_dir.mkdir(parents=True)
+            (old_summary_dir / "payments-summary.json").write_text(
+                """
+                {
+                  "metrics": {
+                    "http_req_duration": { "p(95)": 0, "avg": 0 },
+                    "http_req_failed": { "passes": 41, "fails": 0, "value": 1 },
+                    "http_reqs": { "count": 41 }
+                  }
+                }
+                """.strip(),
+                encoding="utf-8",
+            )
+            ticket = SearchDocument(
+                source_type="jira",
+                title="KAN-5: Develop payment script",
+                url="https://jira.local/browse/KAN-5",
+                content=(
+                    "Interface: POST http://localhost:3005/api/payments/process\n"
+                    "Scenarios: approved / rejected\n"
+                    "Tag { service: 'payments' }\n"
+                    "Thresholds reference KAN-4: P95 < 800ms, error rate < 0.1%\n"
+                    "Suggested split: 80% approved / 20% rejected\n"
+                    "traceparent propagated - unified trace visible in Tempo\n"
+                ),
+                metadata={"key": "KAN-5"},
+            )
+            jira_dependency = FakeJiraWorkflowDependency(ticket)
+            responder = StubResponder()
+
+            def staged_call_function(
+                system_prompt: str,
+                user_prompt: str,
+                function_name: str,
+                function_description: str,
+                parameters: dict,
+                temperature: float = 0.1,
+            ) -> dict:
+                responder.function_calls.append(
+                    (system_prompt, user_prompt, function_name, function_description, parameters, temperature)
+                )
+                if function_name == "decide_ticket_workflow":
+                    return {
+                        "execution_mode": "plan_then_run",
+                        "ordered_skills": ["performance-testing-strategy", "k6-best-practices"],
+                        "rationale": ["Concrete payment endpoint and SLA are present in the ticket."],
+                    }
+                return {}
+
+            responder.call_function = staged_call_function
+            responder.complete = lambda *args, **kwargs: ""
+            connector = JiraPerformanceWorkflowConnector(
+                jira_connector=jira_dependency,  # type: ignore[arg-type]
+                workspace=workspace,
+                skill_catalog=ProjectSkillCatalog(),
+                responder=responder,  # type: ignore[arg-type]
+            )
+            summary_path = new_summary_dir / "payments-summary.json"
+            summary_path.write_text(
+                """
+                {
+                  "metrics": {
+                    "http_req_duration": { "p(95)": 7.7912, "avg": 3.2641 },
+                    "checks": { "passes": 41, "fails": 41, "value": 0.5 },
+                    "http_req_failed": { "passes": 41, "fails": 0, "value": 1 },
+                    "http_reqs": { "count": 41 }
+                  },
+                  "root_group": {
+                    "name": "",
+                    "groups": {
+                      "KAN-5 payment group": {
+                        "name": "KAN-5 payment group",
+                        "checks": {
+                          "status is expected": { "passes": 0, "fails": 41 },
+                          "response time within hard ceiling": { "passes": 41, "fails": 0 }
+                        }
+                      }
+                    }
+                  }
+                }
+                """.strip(),
+                encoding="utf-8",
+            )
+            run_result = MagicMock(
+                exit_code=0,
+                summary_path=summary_path,
+                dashboard_path=new_summary_dir / "payments-dashboard.html",
+                stdout="ok",
+                stderr="",
+                run_dir=new_summary_dir,
+                script_path=project_root / "tests" / "payments" / "payments.kan-5.test.js",
+            )
+            with patch.object(workspace, "run_script", return_value=run_result):
+                result = connector.execute(
+                    ActionRequest(
+                        operation="run",
+                        target_system="jira",
+                        target_type="workflow",
+                        identifier="KAN-5",
+                    )
+                )
+
+            self.assertIn("The run does not prove the requested approved/rejected scenario split such as 80/20.", result.document.content)
+            self.assertIn("The run does not include evidence that traceparent propagation and Tempo trace visibility were verified.", result.document.content)
+            self.assertIn("The latest baseline file does not contain meaningful latency values, so the comparison is not decision-grade.", result.document.content)
+        finally:
+            if project_root.exists():
+                shutil.rmtree(project_root)
+
+    def test_jira_comment_does_not_imply_ticket_can_close_when_checks_fail(self) -> None:
+        project_root = Path("tests") / ".tmp_jira_comment_semantics"
+        if project_root.exists():
+            shutil.rmtree(project_root)
+        try:
+            script_seed = project_root / "tests" / "payments" / "payments.test.js"
+            script_seed.parent.mkdir(parents=True)
+            script_seed.write_text("export default function () {}", encoding="utf-8")
+            workspace = K6Workspace(str(project_root))
+            ticket = SearchDocument(
+                source_type="jira",
+                title="KAN-5: Develop payment script",
+                url="https://jira.local/browse/KAN-5",
+                content=(
+                    "Interface: POST http://localhost:3005/api/payments/process\n"
+                    "Scenarios: approved / rejected\n"
+                    "Tag { service: 'payments' }\n"
+                    "Thresholds reference KAN-4: P95 < 800ms, error rate < 0.1%\n"
+                    "Suggested split: 80% approved / 20% rejected\n"
+                    "traceparent propagated - unified trace visible in Tempo\n"
+                ),
+                metadata={"key": "KAN-5"},
+            )
+            jira_dependency = FakeJiraWorkflowDependency(ticket)
+            responder = StubResponder()
+
+            def staged_call_function(
+                system_prompt: str,
+                user_prompt: str,
+                function_name: str,
+                function_description: str,
+                parameters: dict,
+                temperature: float = 0.1,
+            ) -> dict:
+                responder.function_calls.append(
+                    (system_prompt, user_prompt, function_name, function_description, parameters, temperature)
+                )
+                if function_name == "decide_ticket_workflow":
+                    return {
+                        "execution_mode": "plan_then_run",
+                        "ordered_skills": ["performance-testing-strategy", "k6-best-practices"],
+                        "rationale": ["Concrete payment endpoint and SLA are present in the ticket."],
+                    }
+                return {}
+
+            responder.call_function = staged_call_function
+            responder.complete = lambda *args, **kwargs: ""
+            connector = JiraPerformanceWorkflowConnector(
+                jira_connector=jira_dependency,  # type: ignore[arg-type]
+                workspace=workspace,
+                skill_catalog=ProjectSkillCatalog(),
+                responder=responder,  # type: ignore[arg-type]
+            )
+            summary_dir = project_root / "results" / "2026-04-18_bot_payments"
+            summary_dir.mkdir(parents=True)
+            summary_path = summary_dir / "payments-summary.json"
+            summary_path.write_text(
+                """
+                {
+                  "metrics": {
+                    "http_req_duration": { "p(95)": 4.17896, "avg": 2.7712 },
+                    "checks": { "passes": 38, "fails": 38, "value": 0.5 },
+                    "http_req_failed": { "passes": 38, "fails": 0, "value": 1 },
+                    "http_reqs": { "count": 38 }
+                  }
+                }
+                """.strip(),
+                encoding="utf-8",
+            )
+            run_result = MagicMock(
+                exit_code=0,
+                summary_path=summary_path,
+                dashboard_path=summary_dir / "payments-dashboard.html",
+                stdout="ok",
+                stderr="",
+                run_dir=summary_dir,
+                script_path=project_root / "tests" / "payments" / "payments.kan-5.test.js",
+            )
+            with patch.object(workspace, "run_script", return_value=run_result):
+                connector.execute(
+                    ActionRequest(
+                        operation="run",
+                        target_system="jira",
+                        target_type="workflow",
+                        identifier="KAN-5",
+                    )
+                )
+
+            comment = jira_dependency.comments[0][1]
+            self.assertIn("Performance workflow completed for KAN-5.", comment)
+            self.assertIn("Latency SLO: passed", comment)
+            self.assertIn("Acceptance checks: 50.0% pass", comment)
+            self.assertIn("Outcome: Performance SLOs passed, but the acceptance checks did not fully pass.", comment)
+            self.assertIn("Next decision: Keep the ticket open and triage the failing acceptance checks before release.", comment)
+            self.assertNotIn("ready to sign off", comment.lower())
+            self.assertNotIn("close ticket", comment.lower())
+        finally:
+            if project_root.exists():
+                shutil.rmtree(project_root)
+
+    def test_jira_workflow_plan_only_skips_k6_execution(self) -> None:
+        project_root = Path("tests") / ".tmp_jira_plan_only"
+        if project_root.exists():
+            shutil.rmtree(project_root)
+        try:
+            workspace = K6Workspace(str(project_root))
+            ticket = SearchDocument(
+                source_type="jira",
+                title="DEV-90: Estimate Black Friday auth workload",
+                url="https://jira.local/browse/DEV-90",
+                content=(
+                    "Estimate expected Black Friday auth traffic.\n"
+                    "Need hourly distribution, VUs, RPS, and recommended test phases.\n"
+                    "This ticket is for planning and estimation only.\n"
+                ),
+                metadata={"key": "DEV-90"},
+            )
+            jira_dependency = FakeJiraWorkflowDependency(ticket)
+            responder = StubResponder()
+
+            def staged_call_function(
+                system_prompt: str,
+                user_prompt: str,
+                function_name: str,
+                function_description: str,
+                parameters: dict,
+                temperature: float = 0.1,
+            ) -> dict:
+                responder.function_calls.append(
+                    (system_prompt, user_prompt, function_name, function_description, parameters, temperature)
+                )
+                if function_name == "decide_ticket_workflow":
+                    return {
+                        "execution_mode": "plan_only",
+                        "ordered_skills": ["performance-testing-strategy"],
+                        "rationale": [
+                            "The ticket asks for estimation and planning rather than an executable performance run.",
+                        ],
+                    }
+                if function_name == "extract_ticket_performance_plan":
+                    return {
+                        "service": "auth",
+                        "endpoint_method": "POST",
+                        "endpoint_path": "/api/auth/login",
+                        "sla_p95_ms": 450,
+                        "error_rate_percent": 0.5,
+                        "vus": 250,
+                        "duration": "30m",
+                        "dataset": "users.json",
+                        "test_type": "load",
+                        "criteria": ["Estimate the Black Friday workload envelope"],
+                        "strategy_notes": ["Model hourly traffic bands before any execution.", "Start with a smoke gate after planning sign-off."],
+                    }
+                return {}
+
+            responder.call_function = staged_call_function
+            connector = JiraPerformanceWorkflowConnector(
+                jira_connector=jira_dependency,  # type: ignore[arg-type]
+                workspace=workspace,
+                skill_catalog=ProjectSkillCatalog(),
+                responder=responder,  # type: ignore[arg-type]
+            )
+
+            with patch.object(workspace, "run_script") as run_script_mock:
+                result = connector.execute(
+                    ActionRequest(
+                        operation="run",
+                        target_system="jira",
+                        target_type="workflow",
+                        identifier="DEV-90",
+                    )
+                )
+
+            self.assertTrue(result.success)
+            run_script_mock.assert_not_called()
+            self.assertEqual(len(responder.function_calls), 2)
+            self.assertIn("Completed Jira planning workflow for DEV-90.", result.message)
+            self.assertIn("Playbooks: docs/skills/performance-testing-strategy.", result.message)
+            self.assertIn("Slack Plan Preview:", result.message)
+            self.assertIn("Execution mode: `plan_only`", result.document.content)
         finally:
             if project_root.exists():
                 shutil.rmtree(project_root)
@@ -1919,7 +2822,7 @@ export default function () {
 
         response = format_slack_response(result)
         self.assertIn("Ran k6 test for auth.", response)
-        self.assertIn("No supporting sources found.", response)
+        self.assertNotIn("Sources:", response)
         self.assertNotIn("performance\\results", response)
 
     def test_format_slack_response_keeps_local_sources_inside_files_directory(self) -> None:
@@ -1939,6 +2842,519 @@ export default function () {
         response = format_slack_response(result)
         self.assertIn("Found a manual.", response)
         self.assertIn("[as400] IBM i manual", response)
+
+    def test_jira_workflow_message_uses_relative_artifact_paths_and_dynamic_metrics(self) -> None:
+        project_root = Path("tests") / ".tmp_jira_slack_message"
+        if project_root.exists():
+            shutil.rmtree(project_root)
+        try:
+            script_seed = project_root / "tests" / "payments" / "payments.test.js"
+            script_seed.parent.mkdir(parents=True)
+            script_seed.write_text("export default function () {}", encoding="utf-8")
+            workspace = K6Workspace(str(project_root))
+            ticket = SearchDocument(
+                source_type="jira",
+                title="KAN-5: Develop payment script",
+                url="https://jira.local/browse/KAN-5",
+                content=(
+                    "Interface: POST http://localhost:3005/api/payments/process\n"
+                    "Tag { service: 'payments' }\n"
+                    "P95 < 800ms\n"
+                    "error rate < 0.1%\n"
+                ),
+                metadata={"key": "KAN-5"},
+            )
+            jira_dependency = FakeJiraWorkflowDependency(ticket)
+            responder = StubResponder()
+
+            def staged_call_function(
+                system_prompt: str,
+                user_prompt: str,
+                function_name: str,
+                function_description: str,
+                parameters: dict,
+                temperature: float = 0.1,
+            ) -> dict:
+                responder.function_calls.append(
+                    (system_prompt, user_prompt, function_name, function_description, parameters, temperature)
+                )
+                if function_name == "decide_ticket_workflow":
+                    return {
+                        "execution_mode": "plan_then_run",
+                        "ordered_skills": ["performance-testing-strategy", "k6-best-practices"],
+                        "rationale": ["Concrete payment endpoint and SLA are present in the ticket."],
+                    }
+                return {}
+
+            responder.call_function = staged_call_function
+            responder.complete = lambda *args, **kwargs: ""
+            connector = JiraPerformanceWorkflowConnector(
+                jira_connector=jira_dependency,  # type: ignore[arg-type]
+                workspace=workspace,
+                skill_catalog=ProjectSkillCatalog(),
+                responder=responder,  # type: ignore[arg-type]
+            )
+            summary_dir = project_root / "results" / "2026-04-18_bot_payments"
+            summary_dir.mkdir(parents=True)
+            summary_path = summary_dir / "payments-summary.json"
+            summary_path.write_text(
+                """
+                {
+                  "metrics": {
+                    "http_req_duration": { "p(95)": 700, "avg": 500 },
+                    "checks": { "passes": 42, "fails": 42, "value": 0.5 },
+                    "http_req_failed": { "passes": 42, "fails": 0, "value": 1 },
+                    "http_reqs": { "count": 42 }
+                  }
+                }
+                """.strip(),
+                encoding="utf-8",
+            )
+            run_result = MagicMock(
+                exit_code=0,
+                summary_path=summary_path,
+                dashboard_path=summary_dir / "payments-dashboard.html",
+                stdout="ok",
+                stderr="",
+                run_dir=summary_dir,
+                script_path=project_root / "tests" / "payments" / "payments.kan-5.test.js",
+            )
+            with patch.object(workspace, "run_script", return_value=run_result):
+                result = connector.execute(
+                    ActionRequest(
+                        operation="run",
+                        target_system="jira",
+                        target_type="workflow",
+                        identifier="KAN-5",
+                    )
+                )
+
+            self.assertIn("Script: tests/payments/payments.kan-5.test.js.", result.message)
+            self.assertIn("Report: results/2026-04-18_bot_payments/payments-report.md.", result.message)
+            self.assertIn("HTML Report: results/2026-04-18_bot_payments/payments-report.html.", result.message)
+            self.assertNotIn("C:\\Program Files\\code\\Buildathon", result.message)
+            self.assertIn("Latency SLO: passed", result.message)
+            self.assertIn("p95 700.000 ms vs target < 800 ms", result.message)
+            self.assertIn("HTTP failures: 0.0% (target < 0.10%).", result.message)
+            self.assertIn("Acceptance checks: 50.0% pass.", result.message)
+            self.assertIn("Requests: 42.", result.message)
+        finally:
+            if project_root.exists():
+                shutil.rmtree(project_root)
+
+    def test_jira_workflow_builds_plan_from_repo_docs_when_ticket_lacks_endpoint(self) -> None:
+        project_root = Path("tests") / ".tmp_jira_repo_docs_fallback"
+        if project_root.exists():
+            shutil.rmtree(project_root)
+        try:
+            performance_tests = project_root / "performance" / "tests" / "seed"
+            performance_tests.mkdir(parents=True)
+            (performance_tests / "seed.test.js").write_text("export default function () {}", encoding="utf-8")
+            website_dir = project_root / "website"
+            website_dir.mkdir(parents=True)
+            (website_dir / "README.md").write_text(
+                (
+                    "# Demo\n\n"
+                    "## Services and Ports\n\n"
+                    "| Service | URL |\n"
+                    "|---|---|\n"
+                    "| users-api | http://localhost:3001 |\n"
+                    "| payments-service | http://localhost:3005 |\n\n"
+                    "## Purchase Flow\n\n"
+                    "curl -X POST http://localhost:3005/api/payments/process\n\n"
+                    "## SLOs\n\n"
+                    "| Service | P95 Latency | Error Rate |\n"
+                    "|---|---|---|\n"
+                    "| payments-service | < 800ms | < 0.1% |\n"
+                ),
+                encoding="utf-8",
+            )
+            (website_dir / "docs").mkdir(parents=True)
+            (website_dir / "docs" / "README.md").write_text("# Docs\n", encoding="utf-8")
+            workspace = K6Workspace(str(project_root / "performance"))
+            ticket = SearchDocument(
+                source_type="jira",
+                title="KAN-4: validate payments-service SLO",
+                url="https://jira.local/browse/KAN-4",
+                content="Please validate the payments-service SLOs from the project docs.",
+                metadata={"key": "KAN-4"},
+            )
+            jira_dependency = FakeJiraWorkflowDependency(ticket)
+            responder = StubResponder()
+            connector = JiraPerformanceWorkflowConnector(
+                jira_connector=jira_dependency,  # type: ignore[arg-type]
+                workspace=workspace,
+                skill_catalog=ProjectSkillCatalog(),
+                responder=responder,  # type: ignore[arg-type]
+            )
+
+            plan = connector._build_plan(ticket, {}, ["performance-testing-strategy"])
+
+            self.assertIsNotNone(plan)
+            assert plan is not None
+            self.assertEqual(plan.service, "payments")
+            self.assertEqual(plan.endpoint_method, "POST")
+            self.assertEqual(plan.endpoint_path, "/api/payments/process")
+            self.assertEqual(plan.sla_p95_ms, 800)
+            self.assertEqual(plan.error_rate_threshold, 0.001)
+            self.assertIn("repository docs", " ".join(plan.strategy_notes).lower())
+        finally:
+            if project_root.exists():
+                shutil.rmtree(project_root)
+
+    def test_jira_workflow_builds_plan_from_realistic_repo_docs_layout(self) -> None:
+        project_root = Path("tests") / ".tmp_jira_repo_docs_realistic"
+        if project_root.exists():
+            shutil.rmtree(project_root)
+        try:
+            performance_tests = project_root / "performance" / "tests" / "seed"
+            performance_tests.mkdir(parents=True)
+            (performance_tests / "seed.test.js").write_text("export default function () {}", encoding="utf-8")
+
+            website_dir = project_root / "website"
+            (website_dir / "docs" / "architecture").mkdir(parents=True)
+            (website_dir / "docs" / "getting-started").mkdir(parents=True)
+            (website_dir / "README.md").write_text(
+                (
+                    "# Demo\n\n"
+                    "| Service | URL |\n"
+                    "|---|---|\n"
+                    "| users-api | http://localhost:3001 |\n"
+                    "| payments-service | http://localhost:3005 |\n"
+                ),
+                encoding="utf-8",
+            )
+            (website_dir / "docs" / "README.md").write_text("# Docs\n", encoding="utf-8")
+            (website_dir / "docs" / "getting-started" / "QUICK_START.md").write_text(
+                (
+                    "TOKEN=$(curl -s -X POST http://localhost:3001/api/auth/login ...)\n"
+                    "ORDER=$(curl -s -X POST http://localhost:3004/api/orders ...)\n"
+                    "curl -s -X POST http://localhost:3005/api/payments/process ...\n"
+                ),
+                encoding="utf-8",
+            )
+            (website_dir / "docs" / "architecture" / "ARCHITECTURE.md").write_text(
+                (
+                    "Service\n\n"
+                    "P95 Latency\n\n"
+                    "Error Rate\n\n"
+                    "Availability\n\n"
+                    "payments-service\n\n"
+                    "< 800ms\n\n"
+                    "< 0.1%\n\n"
+                    "99.99%\n"
+                ),
+                encoding="utf-8",
+            )
+
+            workspace = K6Workspace(str(project_root / "performance"))
+            ticket = SearchDocument(
+                source_type="jira",
+                title="KAN-4: validate payments-service SLO",
+                url="https://jira.local/browse/KAN-4",
+                content="Use the project documentation to create a runnable performance plan for payments-service.",
+                metadata={"key": "KAN-4"},
+            )
+            jira_dependency = FakeJiraWorkflowDependency(ticket)
+            responder = StubResponder()
+            connector = JiraPerformanceWorkflowConnector(
+                jira_connector=jira_dependency,  # type: ignore[arg-type]
+                workspace=workspace,
+                skill_catalog=ProjectSkillCatalog(),
+                responder=responder,  # type: ignore[arg-type]
+            )
+
+            plan = connector._build_plan(ticket, {}, ["performance-testing-strategy"])
+
+            self.assertIsNotNone(plan)
+            assert plan is not None
+            self.assertEqual(plan.service, "payments")
+            self.assertEqual(plan.endpoint_method, "POST")
+            self.assertEqual(plan.endpoint_path, "/api/payments/process")
+            self.assertEqual(plan.sla_p95_ms, 800)
+            self.assertEqual(plan.error_rate_threshold, 0.001)
+        finally:
+            if project_root.exists():
+                shutil.rmtree(project_root)
+
+    def test_jira_workflow_builds_plan_from_ticket_service_matrix_and_repo_endpoint(self) -> None:
+        project_root = Path("tests") / ".tmp_jira_ticket_matrix"
+        if project_root.exists():
+            shutil.rmtree(project_root)
+        try:
+            performance_tests = project_root / "performance" / "tests" / "seed"
+            performance_tests.mkdir(parents=True)
+            (performance_tests / "seed.test.js").write_text("export default function () {}", encoding="utf-8")
+
+            website_dir = project_root / "website"
+            website_dir.mkdir(parents=True)
+            (website_dir / "README.md").write_text(
+                (
+                    "# Demo\n\n"
+                    "curl -X POST http://localhost:3005/api/payments/process\n"
+                ),
+                encoding="utf-8",
+            )
+            (website_dir / "docs").mkdir(parents=True)
+            (website_dir / "docs" / "README.md").write_text("# Docs\n", encoding="utf-8")
+
+            workspace = K6Workspace(str(project_root / "performance"))
+            ticket = SearchDocument(
+                source_type="jira",
+                title="KAN-4: Service SLO matrix",
+                url="https://jira.local/browse/KAN-4",
+                content=(
+                    "Service\n\n"
+                    "P95 Latency\n\n"
+                    "Error Rate\n\n"
+                    "Availability\n\n"
+                    "users-api\n\n"
+                    "< 450ms\n\n"
+                    "< 0.5%\n\n"
+                    "99.9%\n\n"
+                    "payments-service\n\n"
+                    "< 800ms\n\n"
+                    "< 0.1%\n\n"
+                    "99.99%\n"
+                ),
+                metadata={"key": "KAN-4"},
+            )
+            jira_dependency = FakeJiraWorkflowDependency(ticket)
+            responder = StubResponder()
+            connector = JiraPerformanceWorkflowConnector(
+                jira_connector=jira_dependency,  # type: ignore[arg-type]
+                workspace=workspace,
+                skill_catalog=ProjectSkillCatalog(),
+                responder=responder,  # type: ignore[arg-type]
+            )
+
+            plan = connector._build_plan(ticket, {"service": "payments"}, ["performance-testing-strategy"])
+
+            self.assertIsNotNone(plan)
+            assert plan is not None
+            self.assertEqual(plan.service, "payments")
+            self.assertEqual(plan.endpoint_method, "POST")
+            self.assertEqual(plan.endpoint_path, "/api/payments/process")
+            self.assertEqual(plan.sla_p95_ms, 800)
+            self.assertEqual(plan.error_rate_threshold, 0.001)
+        finally:
+            if project_root.exists():
+                shutil.rmtree(project_root)
+
+    def test_jira_workflow_plan_only_comment_body_accepts_missing_metrics(self) -> None:
+        project_root = Path("tests") / ".tmp_jira_plan_only_comment"
+        if project_root.exists():
+            shutil.rmtree(project_root)
+        try:
+            performance_tests = project_root / "performance" / "tests" / "seed"
+            performance_tests.mkdir(parents=True)
+            (performance_tests / "seed.test.js").write_text("export default function () {}", encoding="utf-8")
+            workspace = K6Workspace(str(project_root / "performance"))
+            ticket = SearchDocument(
+                source_type="jira",
+                title="KAN-4: Service SLO matrix",
+                url="https://jira.local/browse/KAN-4",
+                content="payments-service\n< 800ms\n< 0.1%",
+                metadata={"key": "KAN-4"},
+            )
+            jira_dependency = FakeJiraWorkflowDependency(ticket)
+            responder = StubResponder()
+            connector = JiraPerformanceWorkflowConnector(
+                jira_connector=jira_dependency,  # type: ignore[arg-type]
+                workspace=workspace,
+                skill_catalog=ProjectSkillCatalog(),
+                responder=responder,  # type: ignore[arg-type]
+            )
+            plan = TicketPerformancePlan(
+                issue_key="KAN-4",
+                summary="Service SLO matrix",
+                description=ticket.content,
+                service="payments",
+                endpoint_method="POST",
+                endpoint_path="/api/payments/process",
+                sla_p95_ms=800,
+                error_rate_threshold=0.001,
+                vus=2,
+                duration="30s",
+                dataset="users.json",
+                test_type="load",
+                criteria=[],
+                strategy_notes=[],
+            )
+            decision = WorkflowDecision(
+                ordered_skills=["performance-testing-strategy"],
+                execution_mode="plan_only",
+                rationale=["Planning only."],
+            )
+            plan_document = SearchDocument(
+                source_type="k6",
+                title="performance plan for KAN-4",
+                url=str(project_root / "performance" / "results" / "kan-4-payments-plan.md"),
+                content="# plan",
+                metadata={},
+            )
+
+            comment = connector._jira_comment_body(
+                plan,
+                plan_document,
+                None,
+                [],
+                decision,
+            )
+
+            self.assertIn("Performance workflow completed for KAN-4.", comment)
+            self.assertIn("Workflow mode: plan_only", comment)
+        finally:
+            if project_root.exists():
+                shutil.rmtree(project_root)
+
+    def test_jira_workflow_decision_fallback_runs_when_repo_docs_recover_endpoint(self) -> None:
+        project_root = Path("tests") / ".tmp_jira_decision_repo_endpoint"
+        if project_root.exists():
+            shutil.rmtree(project_root)
+        try:
+            performance_tests = project_root / "performance" / "tests" / "seed"
+            performance_tests.mkdir(parents=True)
+            (performance_tests / "seed.test.js").write_text("export default function () {}", encoding="utf-8")
+
+            website_dir = project_root / "website"
+            website_dir.mkdir(parents=True)
+            (website_dir / "README.md").write_text(
+                "# Demo\n\ncurl -X POST http://localhost:3005/api/payments/process\n",
+                encoding="utf-8",
+            )
+            (website_dir / "docs").mkdir(parents=True)
+            (website_dir / "docs" / "README.md").write_text("# Docs\n", encoding="utf-8")
+
+            workspace = K6Workspace(str(project_root / "performance"))
+            ticket = SearchDocument(
+                source_type="jira",
+                title="KAN-4: Service SLO matrix",
+                url="https://jira.local/browse/KAN-4",
+                content=(
+                    "Generate test plan and k6 script.\n"
+                    "payments-service\n"
+                    "< 800ms\n"
+                    "< 0.1%\n"
+                ),
+                metadata={"key": "KAN-4"},
+            )
+            jira_dependency = FakeJiraWorkflowDependency(ticket)
+            responder = StubResponder()
+            responder.call_function = lambda *args, **kwargs: {}
+            connector = JiraPerformanceWorkflowConnector(
+                jira_connector=jira_dependency,  # type: ignore[arg-type]
+                workspace=workspace,
+                skill_catalog=ProjectSkillCatalog(),
+                responder=responder,  # type: ignore[arg-type]
+            )
+
+            decision = connector._decide_ticket_workflow(ticket, {"service": "payments"})
+
+            self.assertIsNotNone(decision)
+            assert decision is not None
+            self.assertEqual(decision.execution_mode, "plan_then_run")
+            self.assertIn("k6-best-practices", decision.ordered_skills)
+        finally:
+            if project_root.exists():
+                shutil.rmtree(project_root)
+
+    def test_jira_workflow_kan4_end_to_end_runs_after_repo_endpoint_recovery(self) -> None:
+        project_root = Path("tests") / ".tmp_jira_kan4_e2e"
+        if project_root.exists():
+            shutil.rmtree(project_root)
+        try:
+            performance_root = project_root / "performance"
+            script_seed = performance_root / "tests" / "payments" / "payments.test.js"
+            script_seed.parent.mkdir(parents=True)
+            script_seed.write_text("export default function () {}", encoding="utf-8")
+
+            website_dir = project_root / "website"
+            website_dir.mkdir(parents=True)
+            (website_dir / "README.md").write_text(
+                (
+                    "# Demo\n\n"
+                    "curl -X POST http://localhost:3005/api/payments/process\n"
+                ),
+                encoding="utf-8",
+            )
+            (website_dir / "docs").mkdir(parents=True)
+            (website_dir / "docs" / "README.md").write_text("# Docs\n", encoding="utf-8")
+
+            workspace = K6Workspace(str(performance_root))
+            ticket = SearchDocument(
+                source_type="jira",
+                title="KAN-4: Service SLO matrix",
+                url="https://jira.local/browse/KAN-4",
+                content=(
+                    "Generate test plan and k6 script, and get the performance result.\n"
+                    "Service\n"
+                    "P95 Latency\n"
+                    "Error Rate\n"
+                    "Availability\n"
+                    "payments-service\n"
+                    "< 800ms\n"
+                    "< 0.1%\n"
+                    "99.99%\n"
+                ),
+                metadata={"key": "KAN-4"},
+            )
+            jira_dependency = FakeJiraWorkflowDependency(ticket)
+            responder = StubResponder()
+            responder.call_function = lambda *args, **kwargs: {}
+            responder.complete = lambda *args, **kwargs: ""
+            connector = JiraPerformanceWorkflowConnector(
+                jira_connector=jira_dependency,  # type: ignore[arg-type]
+                workspace=workspace,
+                skill_catalog=ProjectSkillCatalog(),
+                responder=responder,  # type: ignore[arg-type]
+            )
+
+            summary_dir = performance_root / "results" / "2026-04-18_bot_payments"
+            summary_dir.mkdir(parents=True)
+            summary_path = summary_dir / "payments-summary.json"
+            summary_path.write_text(
+                """
+                {
+                  "metrics": {
+                    "http_req_duration": { "p(95)": 700, "avg": 500 },
+                    "checks": { "passes": 42, "fails": 0, "value": 1 },
+                    "http_req_failed": { "passes": 42, "fails": 0, "value": 1 },
+                    "http_reqs": { "count": 42 }
+                  }
+                }
+                """.strip(),
+                encoding="utf-8",
+            )
+            run_result = MagicMock(
+                exit_code=0,
+                summary_path=summary_path,
+                dashboard_path=summary_dir / "payments-dashboard.html",
+                stdout="ok",
+                stderr="",
+                run_dir=summary_dir,
+                script_path=performance_root / "tests" / "payments" / "payments.kan-4.test.js",
+            )
+
+            with patch.object(workspace, "run_script", return_value=run_result):
+                result = connector.execute(
+                    ActionRequest(
+                        operation="run",
+                        target_system="jira",
+                        target_type="workflow",
+                        identifier="KAN-4",
+                        fields={"service": "payments"},
+                    )
+                )
+
+            self.assertTrue(result.success)
+            self.assertIn("Completed Jira performance workflow for KAN-4.", result.message)
+            self.assertIn("Script: tests/payments/payments.kan-4.test.js.", result.message)
+            self.assertIn("Report: results/2026-04-18_bot_payments/payments-report.md.", result.message)
+            self.assertNotIn("Completed Jira planning workflow", result.message)
+        finally:
+            if project_root.exists():
+                shutil.rmtree(project_root)
 
 
 class SlackSocketModeTests(unittest.TestCase):
@@ -2013,6 +3429,73 @@ class SlackSocketModeTests(unittest.TestCase):
 
         socket_client.send_socket_mode_response.assert_called_once()
         handle_mock.assert_called_once()
+
+    def test_upload_html_report_if_available_uploads_matching_html_file(self) -> None:
+        project_root = Path("tests") / ".tmp_slack_html_upload"
+        if project_root.exists():
+            shutil.rmtree(project_root)
+        try:
+            run_dir = project_root / "results" / "2026-04-18_bot_payments"
+            run_dir.mkdir(parents=True)
+            report_path = run_dir / "payments-report.md"
+            report_path.write_text("# report", encoding="utf-8")
+            html_path = run_dir / "payments-report.html"
+            html_path.write_text("<html></html>", encoding="utf-8")
+            result = AgentAnswer(
+                answer="done",
+                citations=[
+                    SearchDocument(
+                        source_type="k6",
+                        title="report",
+                        url=str(report_path),
+                        content="# report",
+                        metadata={"report_path": str(report_path)},
+                    )
+                ],
+                reasoning_trace=[],
+            )
+            client = MagicMock()
+
+            _upload_html_report_if_available(
+                {"channel": "C123"},
+                client,
+                "171234.567",
+                result,
+            )
+
+            client.files_upload_v2.assert_called_once()
+            kwargs = client.files_upload_v2.call_args.kwargs
+            self.assertEqual(kwargs["channel"], "C123")
+            self.assertEqual(kwargs["thread_ts"], "171234.567")
+            self.assertEqual(Path(kwargs["file"]).resolve(), html_path.resolve())
+        finally:
+            if project_root.exists():
+                shutil.rmtree(project_root)
+
+    def test_upload_html_report_if_available_skips_when_report_path_missing(self) -> None:
+        result = AgentAnswer(
+            answer="done",
+            citations=[
+                SearchDocument(
+                    source_type="k6",
+                    title="report",
+                    url="",
+                    content="# report",
+                    metadata={},
+                )
+            ],
+            reasoning_trace=[],
+        )
+        client = MagicMock()
+
+        _upload_html_report_if_available(
+            {"channel": "C123"},
+            client,
+            "171234.567",
+            result,
+        )
+
+        client.files_upload_v2.assert_not_called()
 
 
 class MainCliTests(unittest.TestCase):

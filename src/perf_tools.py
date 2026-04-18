@@ -399,8 +399,8 @@ class K6Workspace:
                 "",
                 "## Technical Metrics",
                 "",
-                f"- HTTP request p(95): {http_duration.get('p(95)', 'n/a')}",
-                f"- HTTP request avg: {http_duration.get('avg', 'n/a')}",
+                f"- HTTP request p(95): {self._format_latency_metric(http_duration.get('p(95)'))}",
+                f"- HTTP request avg: {self._format_latency_metric(http_duration.get('avg'))}",
                 f"- Checks pass rate: {checks.get('rate', 'n/a')}",
                 f"- HTTP failure rate: {failures.get('rate', 'n/a')}",
                 f"- Iterations: {iterations.get('count', 'n/a')}",
@@ -480,6 +480,17 @@ class K6Workspace:
         values = metric.get("values")
         if isinstance(values, dict):
             return values
+        passes = metric.get("passes")
+        fails = metric.get("fails")
+        if isinstance(passes, (int, float)) and isinstance(fails, (int, float)):
+            total = passes + fails
+            rate = passes / total if total else None
+            if metric_name == "http_req_failed":
+                rate = fails / total if total else None
+            normalized = dict(metric)
+            if rate is not None:
+                normalized["rate"] = rate
+            return normalized
         return metric
 
     def _relative_path(self, path: Path | None) -> str:
@@ -521,6 +532,16 @@ class K6Workspace:
             return None
         if "values" in metric and isinstance(metric.get("values"), dict):
             return metric["values"].get(value_key)
+        if value_key == "rate":
+            passes = metric.get("passes")
+            fails = metric.get("fails")
+            if isinstance(passes, (int, float)) and isinstance(fails, (int, float)):
+                total = passes + fails
+                if not total:
+                    return None
+                if metric_name == "http_req_failed":
+                    return fails / total
+                return passes / total
         return metric.get(value_key)
 
     @staticmethod
@@ -562,11 +583,11 @@ class K6Workspace:
         p95_delta = self._format_delta(current_p95, baseline_p95)
         if baseline_metrics and p95_delta != "n/a":
             return (
-                f"The run finished with p95={self._format_metric(current_p95)} and failure rate={self._format_metric(failure_rate)}; "
+                f"The run finished with p95={self._format_latency_metric(current_p95)} and failure rate={self._format_metric(failure_rate)}; "
                 f"versus baseline, p95 changed by {p95_delta}."
             )
         return (
-            f"The run finished with p95={self._format_metric(current_p95)} and failure rate={self._format_metric(failure_rate)}. "
+            f"The run finished with p95={self._format_latency_metric(current_p95)} and failure rate={self._format_metric(failure_rate)}. "
             "Use this run as the baseline if no prior comparison exists."
         )
 
@@ -580,10 +601,17 @@ class K6Workspace:
         failure_rate = failures.get("rate")
         check_rate = checks.get("rate")
         return (
-            f"The latest run reported p(95)={p95}, "
+            f"The latest run reported p(95)={K6Workspace._format_latency_metric(p95)}, "
             f"check pass rate={check_rate}, and failure rate={failure_rate}. "
             "Use the linked Grafana dashboard to correlate latency spikes with backend metrics."
         )
+
+    @staticmethod
+    def _format_latency_metric(value: float | int | str | None) -> str:
+        formatted = K6Workspace._format_metric(value)
+        if formatted == "n/a":
+            return formatted
+        return f"{formatted} ms"
 
     @staticmethod
     def _grafana_link(service: str) -> str:

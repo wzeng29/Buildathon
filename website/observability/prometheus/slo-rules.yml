@@ -1,0 +1,209 @@
+groups:
+  - name: slo_definitions
+    interval: 30s
+    rules:
+      # ==================== SLI: AVAILABILITY ====================
+      # SLI: Porcentaje de requests exitosos (non-5xx)
+      # `(denom > 0)` filtra el denominador a vacío cuando es 0, evitando 0/0=NaN
+      # `or vector(1)` devuelve 1 (100%) cuando no hay tráfico
+      - record: sli:availability:ratio_rate5m
+        expr: |
+          (
+            sum(rate(http_requests_total{status_code!~"5.."}[5m]))
+            /
+            (sum(rate(http_requests_total[5m])) > 0)
+          ) or vector(1)
+
+      # SLI: Availability por endpoint
+      - record: sli:availability:ratio_rate5m:by_route
+        expr: |
+          sum by (route) (rate(http_requests_total{status_code!~"5.."}[5m]))
+          /
+          sum by (route) (rate(http_requests_total[5m]))
+
+      # ==================== SLI: LATENCY ====================
+      # SLI: Porcentaje de requests bajo 500ms (P95)
+      - record: sli:latency:ratio_rate5m
+        expr: |
+          (
+            sum(rate(http_request_duration_seconds_bucket{le="0.5"}[5m]))
+            /
+            (sum(rate(http_request_duration_seconds_count[5m])) > 0)
+          ) or vector(1)
+
+      # SLI: Latency por endpoint
+      - record: sli:latency:ratio_rate5m:by_route
+        expr: |
+          sum by (route) (rate(http_request_duration_seconds_bucket{le="0.5"}[5m]))
+          /
+          sum by (route) (rate(http_request_duration_seconds_count[5m]))
+
+      # ==================== SLI: ERROR RATE ====================
+      # SLI: Tasa de errores de aplicación
+      - record: sli:error_rate:ratio_rate5m
+        expr: |
+          sum(rate(api_errors_total[5m]))
+          /
+          sum(rate(http_requests_total[5m]))
+
+      # ==================== SLI: DATABASE PERFORMANCE ====================
+      # SLI: Queries de BD exitosas
+      - record: sli:database:success_ratio_rate5m
+        expr: |
+          (
+            sum(rate(db_queries_total{status="success"}[5m]))
+            /
+            (sum(rate(db_queries_total[5m])) > 0)
+          ) or vector(1)
+
+      # SLI: Database latency (queries bajo 100ms)
+      - record: sli:database:latency_ratio_rate5m
+        expr: |
+          (
+            sum(rate(db_query_duration_seconds_bucket{le="0.1"}[5m]))
+            /
+            (sum(rate(db_query_duration_seconds_count[5m])) > 0)
+          ) or vector(1)
+
+      # ==================== ERROR BUDGET ====================
+      # Error budget para availability (SLO: 99.9% = 0.1% error budget)
+      - record: slo:availability:error_budget_remaining
+        expr: |
+          1 - (
+            (1 - sli:availability:ratio_rate5m)
+            /
+            (1 - 0.999)
+          )
+
+      # Error budget para latency (SLO: 95% bajo 500ms)
+      - record: slo:latency:error_budget_remaining
+        expr: |
+          1 - (
+            (1 - sli:latency:ratio_rate5m)
+            /
+            (1 - 0.95)
+          )
+
+      # ==================== BURN RATE ====================
+      # Burn rate de availability (ventana de 1 hora)
+      # Burn rate > 1 significa que estamos quemando el error budget más rápido de lo permitido
+      - record: slo:availability:burn_rate_1h
+        expr: |
+          (1 - sli:availability:ratio_rate5m)
+          /
+          (1 - 0.999)
+
+      # Burn rate de latency (ventana de 1 hora)
+      - record: slo:latency:burn_rate_1h
+        expr: |
+          (1 - sli:latency:ratio_rate5m)
+          /
+          (1 - 0.95)
+
+      # ==================== SLO COMPLIANCE ====================
+      # Indicador binario: ¿Estamos cumpliendo el SLO de availability?
+      - record: slo:availability:compliance
+        expr: sli:availability:ratio_rate5m >= 0.999
+
+      # Indicador binario: ¿Estamos cumpliendo el SLO de latency?
+      - record: slo:latency:compliance
+        expr: sli:latency:ratio_rate5m >= 0.95
+
+      # Indicador binario: ¿Estamos cumpliendo el SLO de database?
+      - record: slo:database:compliance
+        expr: sli:database:success_ratio_rate5m >= 0.999
+
+  # ==================== ALERTAS BASADAS EN SLO ====================
+  - name: slo_alerts
+    interval: 30s
+    rules:
+      # Alerta: Burn rate alto (quemando error budget rápido)
+      - alert: HighErrorBudgetBurnRate
+        expr: |
+          (
+            slo:availability:burn_rate_1h > 14.4
+            and
+            sli:availability:ratio_rate5m < 0.999
+          )
+          or
+          (
+            slo:latency:burn_rate_1h > 14.4
+            and
+            sli:latency:ratio_rate5m < 0.95
+          )
+        for: 2m
+        labels:
+          severity: critical
+          component: slo
+        annotations:
+          summary: "Error budget se está quemando rápidamente"
+          description: "El burn rate es {{ $value | humanize }}x, arriesgando el SLO mensual"
+
+      # Alerta: Error budget agotado
+      - alert: ErrorBudgetExhausted
+        expr: |
+          slo:availability:error_budget_remaining < 0
+          or
+          slo:latency:error_budget_remaining < 0
+        for: 5m
+        labels:
+          severity: critical
+          component: slo
+        annotations:
+          summary: "Error budget completamente agotado"
+          description: "El error budget se ha agotado. Cualquier error adicional viola el SLO."
+
+      # Alerta: Availability SLO violation
+      - alert: AvailabilitySLOViolation
+        expr: sli:availability:ratio_rate5m < 0.999
+        for: 5m
+        labels:
+          severity: warning
+          component: slo
+        annotations:
+          summary: "SLO de disponibilidad no cumplido"
+          description: "Availability actual: {{ $value | humanizePercentage }} (SLO: 99.9%)"
+
+      # Alerta: Latency SLO violation
+      - alert: LatencySLOViolation
+        expr: sli:latency:ratio_rate5m < 0.95
+        for: 5m
+        labels:
+          severity: warning
+          component: slo
+        annotations:
+          summary: "SLO de latencia no cumplido"
+          description: "{{ $value | humanizePercentage }} de requests bajo 500ms (SLO: 95%)"
+
+      # Alerta: Database SLO violation
+      - alert: DatabaseSLOViolation
+        expr: sli:database:success_ratio_rate5m < 0.999
+        for: 3m
+        labels:
+          severity: warning
+          component: slo
+        annotations:
+          summary: "SLO de base de datos no cumplido"
+          description: "Success rate de DB: {{ $value | humanizePercentage }} (SLO: 99.9%)"
+
+      # Alerta: Bajo error budget restante (< 10%)
+      - alert: LowErrorBudget
+        expr: |
+          (
+            slo:availability:error_budget_remaining < 0.1
+            and
+            slo:availability:error_budget_remaining > 0
+          )
+          or
+          (
+            slo:latency:error_budget_remaining < 0.1
+            and
+            slo:latency:error_budget_remaining > 0
+          )
+        for: 10m
+        labels:
+          severity: info
+          component: slo
+        annotations:
+          summary: "Error budget bajo (< 10% restante)"
+          description: "Quedan {{ $value | humanizePercentage }} del error budget mensual. Considerar congelar deployments."

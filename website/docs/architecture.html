@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Poleras Store - Architecture</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Arial, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      padding: 32px 20px 48px;
+    }
+    .wrap {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    h1 {
+      margin: 0 0 6px;
+      font-size: 32px;
+      text-align: center;
+    }
+    .subtitle {
+      margin: 0 0 12px;
+      color: #94a3b8;
+      text-align: center;
+    }
+    .nav {
+      text-align: center;
+      margin-bottom: 28px;
+    }
+    .nav a {
+      color: #cbd5e1;
+      text-decoration: none;
+      border: 1px solid #334155;
+      background: #1e293b;
+      border-radius: 8px;
+      padding: 8px 14px;
+      display: inline-block;
+    }
+    .card {
+      background: #ffffff;
+      border-radius: 16px;
+      padding: 24px;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+      overflow-x: auto;
+    }
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+      margin-top: 18px;
+      padding: 14px 16px;
+      background: #111827;
+      border: 1px solid #1f2937;
+      border-radius: 12px;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: #cbd5e1;
+      font-size: 13px;
+    }
+    .dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 3px;
+    }
+    footer {
+      margin-top: 20px;
+      text-align: center;
+      color: #64748b;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Poleras Store</h1>
+    <p class="subtitle">High-level platform architecture</p>
+    <div class="nav">
+      <a href="sequence.html">Open purchase flow</a>
+    </div>
+
+    <div class="card">
+      <div class="mermaid">
+flowchart TB
+    browser[Browser]
+
+    subgraph frontend[Frontend]
+      fe[Astro + React UI<br/>localhost:4000]
+    end
+
+    subgraph services[Application Services]
+      users[users-api<br/>localhost:3001]
+      products[products-service<br/>localhost:3002]
+      cart[cart-service<br/>localhost:3003]
+      orders[orders-service<br/>localhost:3004]
+      payments[payments-service<br/>localhost:3005]
+    end
+
+    subgraph data[PostgreSQL Databases]
+      usersdb[(users-db)]
+      productsdb[(products-db)]
+      cartdb[(cart-db)]
+      ordersdb[(orders-db)]
+      paymentsdb[(payments-db)]
+    end
+
+    subgraph observability[Observability Stack]
+      grafana[Grafana<br/>localhost:3000]
+      prometheus[Prometheus<br/>localhost:9090]
+      loki[Loki<br/>localhost:3100]
+      tempo[Tempo<br/>localhost:3200]
+      promtail[Promtail]
+    end
+
+    browser --> fe
+    fe --> users
+    fe --> products
+    fe --> cart
+    fe --> orders
+    fe --> payments
+
+    users --> usersdb
+    products --> productsdb
+    cart --> cartdb
+    orders --> ordersdb
+    payments --> paymentsdb
+
+    orders --> cart
+    orders --> products
+    payments --> orders
+
+    users --> tempo
+    products --> tempo
+    cart --> tempo
+    orders --> tempo
+    payments --> tempo
+
+    promtail --> loki
+    prometheus --> users
+    prometheus --> products
+    prometheus --> cart
+    prometheus --> orders
+    prometheus --> payments
+
+    grafana --> prometheus
+    grafana --> loki
+    grafana --> tempo
+
+    classDef front fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef svc fill:#ede9fe,stroke:#7c3aed,color:#4c1d95
+    classDef db fill:#f1f5f9,stroke:#64748b,color:#334155
+    classDef obs fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e
+    classDef user fill:#dbeafe,stroke:#2563eb,color:#1d4ed8
+
+    class browser user
+    class fe front
+    class users,products,cart,orders,payments svc
+    class usersdb,productsdb,cartdb,ordersdb,paymentsdb db
+    class grafana,prometheus,loki,tempo,promtail obs
+      </div>
+    </div>
+
+    <div class="legend">
+      <div class="legend-item"><span class="dot" style="background:#2563eb"></span>User traffic</div>
+      <div class="legend-item"><span class="dot" style="background:#16a34a"></span>Frontend</div>
+      <div class="legend-item"><span class="dot" style="background:#7c3aed"></span>Microservices</div>
+      <div class="legend-item"><span class="dot" style="background:#64748b"></span>Databases</div>
+      <div class="legend-item"><span class="dot" style="background:#0284c7"></span>Observability</div>
+    </div>
+
+    <footer>Docker-based demo stack with application, data, and observability layers.</footer>
+  </div>
+
+  <script>
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: "base",
+      securityLevel: "loose",
+      flowchart: { useMaxWidth: true, htmlLabels: true, curve: "basis" }
+    });
+  </script>
+</body>
+</html>

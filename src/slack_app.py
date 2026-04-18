@@ -4,6 +4,7 @@ import logging
 import re
 import threading
 from threading import Event
+from pathlib import Path
 
 from slack_sdk.socket_mode import SocketModeClient
 from slack_sdk.socket_mode.request import SocketModeRequest
@@ -99,11 +100,49 @@ def _process_event_async(
                 event.get("channel"),
                 placeholder_ts,
             )
+            _upload_html_report_if_available(event, client, placeholder_ts, result)
         else:
-            client.chat_postMessage(channel=event["channel"], text=reply_text)
+            response = client.chat_postMessage(channel=event["channel"], text=reply_text)
             LOGGER.info("Posted final reply without placeholder.")
+            _upload_html_report_if_available(event, client, response.get("ts"), result)
     except Exception as exc:  # pragma: no cover - network-bound fallback
         LOGGER.exception("Failed to process Slack event asynchronously: %s", exc)
+
+
+def _upload_html_report_if_available(
+    event: dict,
+    client: WebClient,
+    thread_ts: str | None,
+    result,
+) -> None:
+    """Best-effort upload of the generated HTML report to the same Slack conversation."""
+    citations = getattr(result, "citations", None) or []
+    document = citations[0] if citations else None
+    metadata = getattr(document, "metadata", {}) if document is not None else {}
+    report_path_raw = str(metadata.get("report_path") or "").strip() if metadata else ""
+    if not report_path_raw:
+        return
+
+    report_path = Path(report_path_raw)
+    html_path = report_path.with_name(f"{report_path.stem.replace('-report', '')}-report.html")
+    if not html_path.exists() or not html_path.is_file():
+        return
+    try:
+        client.files_upload_v2(
+            channel=event["channel"],
+            thread_ts=thread_ts,
+            file=str(html_path),
+            title=html_path.name,
+            initial_comment="Attached HTML performance report.",
+        )
+        LOGGER.info(
+            "Uploaded HTML report to Slack. channel=%s thread_ts=%s file=%s",
+            event.get("channel"),
+            thread_ts,
+            html_path,
+        )
+    except Exception as exc:  # pragma: no cover - network-bound fallback
+        LOGGER.exception("Failed to upload HTML report to Slack: %s", exc)
 
 
 def handle_slack_event(event: dict, client: WebClient) -> None:

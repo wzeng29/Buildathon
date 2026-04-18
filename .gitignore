@@ -136,6 +136,8 @@ venv.bak/
 
 # Local runtime artifacts
 performance/results/
+performance/tests/**/*.kan-*.test.js
+performance/tests/service/
 *.err.log
 *.out.log
 

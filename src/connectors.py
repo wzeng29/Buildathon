@@ -3,9 +3,11 @@ from __future__ import annotations
 import csv
 import html
 import json
+import logging
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import urljoin
@@ -30,6 +32,7 @@ CONFLUENCE_EXPAND_FIELDS = "body.storage,version,space"
 JIRA_FIELDS = "summary,description,status,issuetype,assignee,project"
 CONFLUENCE_QUERY_FALLBACK_LIMIT = 3
 AS400_COMMAND_PATTERN = re.compile(r"\b[A-Z]{3,10}[A-Z0-9]{0,2}\b")
+LOGGER = logging.getLogger(__name__)
 
 
 def _tokenize(text: str) -> set[str]:
@@ -275,6 +278,7 @@ def _k6_metric_summary(run_result: "K6RunResult") -> dict[str, str]:
             "p95": str(http_duration.get("p(95)", "n/a")),
             "avg": str(http_duration.get("avg", "n/a")),
             "failure_rate": str(failures.get("rate", "n/a")),
+            "check_rate": str(_metric_entry(metrics, "checks").get("rate", "n/a")),
             "request_count": str(requests.get("count", "n/a")),
         }
     )
@@ -288,6 +292,14 @@ def _metric_entry(metrics: dict[str, Any], metric_name: str) -> dict[str, Any]:
     values = metric.get("values")
     if isinstance(values, dict):
         return values
+    passes = metric.get("passes")
+    fails = metric.get("fails")
+    if isinstance(passes, (int, float)) and isinstance(fails, (int, float)):
+        total = passes + fails
+        normalized = dict(metric)
+        if total:
+            normalized["rate"] = (fails / total) if metric_name == "http_req_failed" else (passes / total)
+        return normalized
     return metric
 
 
@@ -346,6 +358,13 @@ class SkillBundle:
     skill_text: str
     reference_texts: dict[str, str]
     evals_payload: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class WorkflowDecision:
+    ordered_skills: list[str]
+    execution_mode: str
+    rationale: list[str]
 
 
 class BaseConnector(ABC):
@@ -1789,16 +1808,52 @@ class JiraPerformanceWorkflowConnector(BaseConnector):
         if not jira_result.success or jira_result.document is None:
             return ActionResult(False, f"Could not load Jira ticket {issue_key}.")
 
-        selected_skills = self._select_ticket_skills(jira_result.document, request.fields)
+        LOGGER.info("Workflow ticket loaded: issue=%s", issue_key)
+        decision = self._decide_ticket_workflow(jira_result.document, request.fields)
+        if decision is None:
+            return ActionResult(False, f"Could not determine workflow decision for Jira ticket {issue_key}.")
+        selected_skills = self.skill_catalog.for_names(decision.ordered_skills)
         selected_skill_names = [skill.name for skill in selected_skills]
+        LOGGER.info(
+            "Workflow decision: issue=%s mode=%s skills=%s",
+            issue_key,
+            decision.execution_mode,
+            ",".join(selected_skill_names),
+        )
         plan = self._build_plan(jira_result.document, request.fields, selected_skill_names)
+        if plan is None:
+            return ActionResult(False, f"Could not extract a structured performance plan from Jira ticket {issue_key}.")
+        LOGGER.info("Workflow plan extracted: issue=%s service=%s endpoint=%s %s", issue_key, plan.service, plan.endpoint_method, plan.endpoint_path)
+        if decision.execution_mode == "plan_only":
+            LOGGER.info("Workflow execution skipped by model decision: issue=%s", issue_key)
+            plan_document = self._create_plan_document(plan, selected_skills, decision)
+            comment_body = self._jira_comment_body(plan, plan_document, None, selected_skills, decision)
+            comment_status = "comment skipped"
+            try:
+                self.jira_connector.add_comment(plan.issue_key, comment_body)
+                comment_status = "comment posted"
+            except Exception as exc:
+                comment_status = f"comment failed: {exc}"
+            message = (
+                f"Completed Jira planning workflow for {plan.issue_key}. "
+                f"Service={plan.service}. Plan: {plan_document.url}. Jira {comment_status}."
+            )
+            preview = self._plan_preview(plan_document.content)
+            if preview:
+                message += f"\n\nSlack Plan Preview:\n{preview}"
+            message += self.skill_catalog.format_for_message(selected_skills)
+            return ActionResult(True, message, document=plan_document)
+
+        LOGGER.info("Workflow script generation started: issue=%s", issue_key)
         script_path = self._generate_script(plan, selected_skill_names)
         run_fields = dict(request.fields)
         run_fields.setdefault("vus", str(plan.vus))
         run_fields.setdefault("duration", plan.duration)
         run_fields.setdefault("base_url", request.fields.get("base_url", self._default_base_url(plan.service)))
 
+        LOGGER.info("Workflow k6 run started: issue=%s script=%s", issue_key, script_path)
         run_result = self.workspace.run_script(script_path, plan.service, run_fields)
+        LOGGER.info("Workflow k6 run finished: issue=%s exit_code=%s", issue_key, run_result.exit_code)
         grafana_document = _safe_grafana_lookup(self.grafana_connector, plan.service)
         report_document = self.workspace.generate_report_with_context(
             plan.service,
@@ -1817,6 +1872,7 @@ class JiraPerformanceWorkflowConnector(BaseConnector):
                 "include_workflow_trace": "true",
             },
         )
+        LOGGER.info("Workflow report generation finished: issue=%s report=%s", issue_key, report_document.url)
         report_document = self._enhance_report(
             report_document,
             plan,
@@ -1835,23 +1891,41 @@ class JiraPerformanceWorkflowConnector(BaseConnector):
             }
         )
 
-        comment_body = self._jira_comment_body(plan, report_document, grafana_document, selected_skills)
+        metric_summary = _k6_metric_summary(run_result)
+        comment_body = self._jira_comment_body(plan, report_document, grafana_document, selected_skills, decision, metric_summary, run_result.summary_path)
         comment_status = "comment skipped"
         try:
             self.jira_connector.add_comment(plan.issue_key, comment_body)
             comment_status = "comment posted"
         except Exception as exc:
             comment_status = f"comment failed: {exc}"
+        LOGGER.info("Workflow Jira comment status: issue=%s status=%s", issue_key, comment_status)
         try:
             run_dir_display = str(run_result.run_dir.resolve().relative_to(self.workspace.project_root.resolve())).replace("\\", "/")
         except ValueError:
             run_dir_display = str(run_result.run_dir)
-
+        script_display = self._workflow_script_path(script_path)
+        report_display = self._relative_workspace_path(Path(report_document.url))
+        html_report_display = self._relative_workspace_path(
+            Path(report_document.url).with_name(f"{Path(report_document.url).stem.replace('-report', '')}-report.html")
+        )
         message = (
             f"Completed Jira performance workflow for {plan.issue_key}. "
-            f"Service={plan.service}. Script: {script_path}. "
-            f"Report: {report_document.url}. Jira {comment_status}. "
+            f"Service={plan.service}. Script: {script_display}. "
+            f"Report: {report_display}. HTML Report: {html_report_display}. Jira {comment_status}. "
             f"Git: git add {run_dir_display}."
+        )
+        message += (
+            f"\n"
+            f"Latency SLO: {self._latency_status(metric_summary, plan)} "
+            f"(p95 {self._format_latency_value(metric_summary.get('p95'))} vs target < {plan.sla_p95_ms} ms). "
+            f"HTTP failures: {self._format_percentage(metric_summary.get('failure_rate'))} "
+            f"(target < {plan.error_rate_threshold * 100:.2f}%)."
+        )
+        message += (
+            f"\n"
+            f"Acceptance checks: {self._format_percentage(metric_summary.get('check_rate'))} pass. "
+            f"Requests: {metric_summary.get('request_count', 'n/a')}."
         )
         if grafana_document is not None:
             message += f" Grafana: {grafana_document.url}."
@@ -1859,44 +1933,122 @@ class JiraPerformanceWorkflowConnector(BaseConnector):
         if preview:
             message += f"\n\nSlack Report Preview:\n{preview}"
         message += self.skill_catalog.format_for_message(selected_skills)
-        return ActionResult(run_result.exit_code == 0, message, document=report_document)
+        passed = run_result.exit_code == 0 and self._passed(_k6_metric_summary(run_result), plan)
+        return ActionResult(passed, message, document=report_document)
 
     def _build_plan(
         self,
         ticket: SearchDocument,
         fields: dict[str, str],
         selected_skill_names: list[str],
-    ) -> TicketPerformancePlan:
-        summary = ticket.title.split(": ", 1)[1] if ": " in ticket.title else ticket.title
-        description = ticket.content or ""
+    ) -> TicketPerformancePlan | None:
         strategy_bundle = self._skill_bundle_if_selected("performance-testing-strategy", selected_skill_names)
         modeled_plan = self._build_plan_via_model(ticket, fields, strategy_bundle)
-        if modeled_plan is not None:
+        if self._is_ticket_grounded_plan(modeled_plan):
             return modeled_plan
+        ticket_plan = self._build_plan_from_ticket_text(ticket, fields)
+        if self._is_ticket_grounded_plan(ticket_plan):
+            return ticket_plan
+        return self._build_plan_from_ticket_and_repo_docs(ticket, fields)
+
+    def _build_plan_via_model(
+        self,
+        ticket: SearchDocument,
+        fields: dict[str, str],
+        bundle: SkillBundle,
+    ) -> TicketPerformancePlan | None:
+        if not bundle.skill_text:
+            return None
+        summary = ticket.title.split(": ", 1)[1] if ": " in ticket.title else ticket.title
+        payload = self.responder.call_function(
+            system_prompt=(
+                "You are extracting a structured performance test plan from a Jira ticket. "
+                "Use the supplied skill, references, and evals as mandatory guidance."
+            ),
+            user_prompt=(
+                f"Ticket key: {ticket.metadata.get('key', '')}\n"
+                f"Summary: {summary}\n"
+                f"Description:\n{ticket.content}\n\n"
+                f"User overrides: {fields}\n\n"
+                f"Skill:\n{bundle.skill_text}\n\n"
+                f"References:\n{self._format_skill_references(bundle)}\n\n"
+                f"Evals:\n{self._format_skill_evals(bundle)}\n\n"
+                "Use only ticket-grounded facts; if missing, infer conservatively and say so in strategy_notes."
+            ),
+            function_name="extract_ticket_performance_plan",
+            function_description="Extract the structured performance test plan from a Jira ticket.",
+            parameters=self._ticket_plan_function_schema(),
+            temperature=0.1,
+        )
+        if not isinstance(payload, dict):
+            return None
+        try:
+            plan = TicketPerformancePlan(
+                issue_key=str(ticket.metadata.get("key", "")),
+                summary=summary,
+                description=ticket.content or "",
+                service=str(payload.get("service") or fields.get("service") or "").lower(),
+                endpoint_method=str(payload.get("endpoint_method") or "").upper(),
+                endpoint_path=str(payload.get("endpoint_path") or ""),
+                sla_p95_ms=int(payload.get("sla_p95_ms") or 0),
+                error_rate_threshold=float(payload.get("error_rate_percent") or 0) / 100,
+                vus=int(payload.get("vus") or fields.get("vus") or 2),
+                duration=str(payload.get("duration") or fields.get("duration") or "30s"),
+                dataset=str(payload.get("dataset") or fields.get("dataset") or "users.json"),
+                test_type=str(payload.get("test_type") or fields.get("type") or "load"),
+                criteria=[str(item) for item in (payload.get("criteria") or [])][:8],
+                strategy_notes=[str(item) for item in (payload.get("strategy_notes") or [])][:8],
+            )
+            return plan
+        except (TypeError, ValueError):
+            return None
+
+    def _build_plan_from_ticket_text(
+        self,
+        ticket: SearchDocument,
+        fields: dict[str, str],
+    ) -> TicketPerformancePlan | None:
+        summary = ticket.title.split(": ", 1)[1] if ": " in ticket.title else ticket.title
+        description = ticket.content or ""
         combined = f"{summary}\n{description}"
         endpoint_method, endpoint_path = self._extract_endpoint(combined)
-        service = fields.get("service") or self._infer_service(combined, endpoint_path)
-        sla_p95_ms = self._extract_int(combined, r"p95\s*[<:=-]+\s*(\d+)\s*ms", 1000)
+        service = self._normalize_service_name(
+            (fields.get("service") or self._infer_service(combined, endpoint_path) or self._infer_service_from_issue(summary, description)).lower()
+        )
+        sla_p95_ms = self._extract_int(combined, r"\bp95\b[^\d]{0,20}(\d+)\s*ms", 0)
+        if sla_p95_ms <= 0 and service:
+            sla_p95_ms = self._extract_service_scoped_slo_int(combined, service, "p95")
         error_rate_percent = self._extract_float(
             combined,
-            r"error rate\s*[<:=-]+\s*(\d+(?:\.\d+)?)\s*%",
-            1.0,
+            r"\berror\s*rate\b[^\d]{0,20}(\d+(?:\.\d+)?)\s*%",
+            0,
         )
+        if error_rate_percent <= 0 and service:
+            error_rate_percent = self._extract_service_scoped_slo_float(combined, service, "error_rate")
+        if not service or sla_p95_ms <= 0 or error_rate_percent <= 0:
+            return None
+        if not endpoint_path or endpoint_path == "/" or endpoint_method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
+            repo_context = self._load_repo_docs_context()
+            service_context = self._repo_service_context(repo_context, service) if repo_context else ""
+            if service_context:
+                endpoint_method, endpoint_path = self._extract_endpoint(service_context)
+            if (not endpoint_path or endpoint_path == "/") and repo_context:
+                endpoint_method, endpoint_path = self._extract_endpoint(repo_context)
+        if sla_p95_ms <= 0 or error_rate_percent <= 0:
+            return None
+        if not endpoint_path or endpoint_path == "/" or endpoint_method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
+            return None
         vus = self._extract_int(
             fields.get("vus", "") or combined,
             r"(?:\bvus\b|\bvirtual users\b|\bconcurrent users\b)\s*[:=]?\s*(\d+)",
             2,
         )
         duration = fields.get("duration") or self._extract_duration(combined) or "30s"
-        dataset = fields.get("dataset") or self._extract_dataset(combined) or "users.json"
-        test_type = fields.get("type") or self._extract_test_type(combined)
         criteria = self._extract_acceptance_criteria(description)
         strategy_notes = [
-            "System Under Test: derive the primary endpoint, data set, and SLA directly from the ticket.",
-            f"Recommended sequence: smoke -> {test_type}.",
-            f"Per-test definition: {vus} VUs, duration {duration}, success criteria p95 < {sla_p95_ms} ms and error rate < {error_rate_percent}%.",
-            "Metrics to collect: p95, p99, avg latency, throughput, error rate, and Grafana backend signals.",
-            "Risks and prerequisites: validate test data, real environment URLs, and monitoring before the run.",
+            "Plan recovered deterministically from Jira text because the model plan was unavailable or incomplete.",
+            f"Use `{service}` service tags for all thresholds and observability queries.",
+            f"Validate `{endpoint_method} {endpoint_path}` against the ticket criteria before sign-off.",
         ]
         return TicketPerformancePlan(
             issue_key=str(ticket.metadata.get("key") or fields.get("ticket") or ""),
@@ -1909,64 +2061,97 @@ class JiraPerformanceWorkflowConnector(BaseConnector):
             error_rate_threshold=error_rate_percent / 100,
             vus=vus,
             duration=duration,
-            dataset=dataset,
-            test_type=test_type,
+            dataset=fields.get("dataset") or self._extract_dataset(combined) or "users.json",
+            test_type=fields.get("type") or self._extract_test_type(combined),
             criteria=criteria,
             strategy_notes=strategy_notes,
         )
 
-    def _build_plan_via_model(
+    def _build_plan_from_ticket_and_repo_docs(
         self,
         ticket: SearchDocument,
         fields: dict[str, str],
-        bundle: SkillBundle,
     ) -> TicketPerformancePlan | None:
-        if not bundle.skill_text:
-            return None
         summary = ticket.title.split(": ", 1)[1] if ": " in ticket.title else ticket.title
-        response = self.responder.complete(
-            system_prompt=(
-                "You are extracting a structured performance test plan from a Jira ticket. "
-                "Use the supplied skill, references, and evals as mandatory guidance. "
-                "Return only JSON."
-            ),
-            user_prompt=(
-                f"Ticket key: {ticket.metadata.get('key', '')}\n"
-                f"Summary: {summary}\n"
-                f"Description:\n{ticket.content}\n\n"
-                f"User overrides: {fields}\n\n"
-                f"Skill:\n{bundle.skill_text}\n\n"
-                f"References:\n{self._format_skill_references(bundle)}\n\n"
-                f"Evals:\n{self._format_skill_evals(bundle)}\n\n"
-                "Return JSON with keys: "
-                "service, endpoint_method, endpoint_path, sla_p95_ms, error_rate_percent, "
-                "vus, duration, dataset, test_type, criteria, strategy_notes. "
-                "Use only ticket-grounded facts; if missing, infer conservatively and say so in strategy_notes."
-            ),
-            temperature=0.1,
+        description = ticket.content or ""
+        combined = f"{summary}\n{description}"
+        repo_context = self._load_repo_docs_context()
+        if not repo_context:
+            return None
+
+        endpoint_method, endpoint_path = self._extract_endpoint(combined)
+        service = (fields.get("service") or self._infer_service(combined, endpoint_path)).lower()
+        service = self._normalize_service_name(service or self._infer_service_from_issue(summary, description))
+        if not service:
+            return None
+
+        service_context = self._repo_service_context(repo_context, service)
+        if not endpoint_path or endpoint_path == "/" or endpoint_method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
+            endpoint_method, endpoint_path = self._extract_endpoint(service_context)
+        if not endpoint_path or endpoint_path == "/":
+            endpoint_method, endpoint_path = self._extract_endpoint(repo_context)
+        if not endpoint_path or endpoint_path == "/":
+            return None
+
+        sla_p95_ms = self._extract_int(combined, r"\bp95\b[^\d]{0,20}(\d+)\s*ms", 0)
+        if sla_p95_ms <= 0:
+            sla_p95_ms = self._extract_repo_slo_int(repo_context, service, "p95")
+        error_rate_percent = self._extract_float(
+            combined,
+            r"\berror\s*rate\b[^\d]{0,20}(\d+(?:\.\d+)?)\s*%",
+            0,
         )
-        payload = self._extract_json_object(response)
-        if not isinstance(payload, dict):
+        if error_rate_percent <= 0:
+            error_rate_percent = self._extract_repo_slo_float(repo_context, service, "error_rate")
+        if sla_p95_ms <= 0 or error_rate_percent <= 0:
             return None
-        try:
-            return TicketPerformancePlan(
-                issue_key=str(ticket.metadata.get("key", "")),
-                summary=summary,
-                description=ticket.content or "",
-                service=str(payload.get("service") or fields.get("service") or "service").lower(),
-                endpoint_method=str(payload.get("endpoint_method") or "GET").upper(),
-                endpoint_path=str(payload.get("endpoint_path") or "/"),
-                sla_p95_ms=int(payload.get("sla_p95_ms") or 1000),
-                error_rate_threshold=float(payload.get("error_rate_percent") or 1.0) / 100,
-                vus=int(payload.get("vus") or fields.get("vus") or 2),
-                duration=str(payload.get("duration") or fields.get("duration") or "30s"),
-                dataset=str(payload.get("dataset") or fields.get("dataset") or "users.json"),
-                test_type=str(payload.get("test_type") or fields.get("type") or "load"),
-                criteria=[str(item) for item in (payload.get("criteria") or [])][:8],
-                strategy_notes=[str(item) for item in (payload.get("strategy_notes") or [])][:8],
-            )
-        except (TypeError, ValueError):
-            return None
+
+        vus = self._extract_int(
+            fields.get("vus", "") or combined,
+            r"(?:\bvus\b|\bvirtual users\b|\bconcurrent users\b)\s*[:=]?\s*(\d+)",
+            2,
+        )
+        duration = fields.get("duration") or self._extract_duration(combined) or "30s"
+        criteria = self._extract_acceptance_criteria(description)
+        repo_criteria = self._extract_acceptance_criteria(service_context)
+        for item in repo_criteria:
+            if item not in criteria:
+                criteria.append(item)
+        strategy_notes = [
+            "Plan recovered from Jira text plus repository docs because the ticket alone did not contain enough runnable detail.",
+            f"Repository docs mapped the `{service}` service to `{endpoint_method} {endpoint_path}`.",
+            f"Use `{service}` service tags for all thresholds and observability queries.",
+        ]
+        return TicketPerformancePlan(
+            issue_key=str(ticket.metadata.get("key") or fields.get("ticket") or ""),
+            summary=summary,
+            description=description,
+            service=service,
+            endpoint_method=endpoint_method,
+            endpoint_path=endpoint_path,
+            sla_p95_ms=sla_p95_ms,
+            error_rate_threshold=error_rate_percent / 100,
+            vus=vus,
+            duration=duration,
+            dataset=fields.get("dataset") or self._extract_dataset(combined) or "users.json",
+            test_type=fields.get("type") or self._extract_test_type(combined),
+            criteria=criteria[:8],
+            strategy_notes=strategy_notes,
+        )
+
+    @staticmethod
+    def _is_ticket_grounded_plan(plan: TicketPerformancePlan | None) -> bool:
+        if plan is None:
+            return False
+        if not plan.service or plan.service == "service":
+            return False
+        if not plan.endpoint_path or plan.endpoint_path == "/":
+            return False
+        if plan.endpoint_method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
+            return False
+        if plan.sla_p95_ms <= 0 or plan.error_rate_threshold <= 0:
+            return False
+        return True
 
     def _generate_script(self, plan: TicketPerformancePlan, selected_skill_names: list[str]) -> Path:
         service_dir = self.workspace.project_root / "tests" / plan.service
@@ -2133,17 +2318,38 @@ export function handleSummary(data) {{
                 "",
                 f"- SLA check: p95 target < {plan.sla_p95_ms} ms; actual p95 = {metrics.get('p95', 'n/a')}.",
                 f"- Error-rate check: target < {plan.error_rate_threshold * 100:.2f}%; actual failure rate = {metrics.get('failure_rate', 'n/a')}.",
+                f"- Acceptance checks: pass rate = {metrics.get('check_rate', 'n/a')}.",
                 f"- Throughput/volume: HTTP requests = {metrics.get('request_count', 'n/a')}.",
                 f"- Severity: {self._severity_label(metrics, plan)}.",
                 "",
                 "## Business Report",
                 "",
-                f"- Outcome: {'The service stayed within the target envelope.' if self._passed(metrics, plan) else 'The service needs follow-up before sign-off.'}",
+                f"- Outcome: {self._business_outcome(metrics, plan)}",
                 f"- Release risk: {self._business_risk(metrics, plan)}.",
-                f"- Next decision: {'Ticket can move forward with monitoring.' if self._passed(metrics, plan) else 'Keep the ticket open and triage latency/errors before release.'}",
+                f"- Next decision: {self._next_decision(metrics, plan)}",
                 "",
             ]
         )
+        evidence_gaps = self._acceptance_evidence_gaps(plan, metrics, run_result.summary_path)
+        if evidence_gaps:
+            technical_section.extend(
+                [
+                    "## Acceptance Gaps",
+                    "",
+                    *[f"- {item}" for item in evidence_gaps],
+                    "",
+                ]
+            )
+        baseline_note = self._baseline_quality_note(report_document.content)
+        if baseline_note:
+            technical_section.extend(
+                [
+                    "## Baseline Quality",
+                    "",
+                    f"- {baseline_note}",
+                    "",
+                ]
+            )
         if grafana_document is not None:
             technical_section.extend(
                 [
@@ -2199,13 +2405,73 @@ export function handleSummary(data) {{
         )
         return response.strip()
 
+    def _create_plan_document(
+        self,
+        plan: TicketPerformancePlan,
+        selected_skills: list[ProjectSkill],
+        decision: WorkflowDecision,
+    ) -> SearchDocument:
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        run_dir = self.workspace.results_root / f"{timestamp}_bot_{plan.service.lower()}"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        plan_path = run_dir / f"{plan.issue_key.lower()}-{plan.service}-plan.md"
+        lines = [
+            f"# Jira Performance Plan: {plan.issue_key}",
+            "",
+            "## Workflow Decision",
+            "",
+            f"- Execution mode: `{decision.execution_mode}`",
+            f"- Skills: {', '.join(skill.relative_path for skill in selected_skills) if selected_skills else 'none'}",
+            *([f"- Rationale: {item}" for item in decision.rationale] or []),
+            "",
+            "## Planned Test Shape",
+            "",
+            f"- Service: `{plan.service}`",
+            f"- Endpoint: `{plan.endpoint_method} {plan.endpoint_path}`",
+            f"- SLA p95 target: `{plan.sla_p95_ms} ms`",
+            f"- Error-rate threshold: `{plan.error_rate_threshold * 100:.2f}%`",
+            f"- VUs: `{plan.vus}`",
+            f"- Duration: `{plan.duration}`",
+            f"- Dataset: `{plan.dataset}`",
+            f"- Test type: `{plan.test_type}`",
+            "",
+            "## Strategy Notes",
+            "",
+            *([f"- {item}" for item in plan.strategy_notes] or ["- None"]),
+        ]
+        if plan.criteria:
+            lines.extend(["", "## Acceptance Criteria", "", *[f"- {item}" for item in plan.criteria]])
+        content = "\n".join(lines).rstrip() + "\n"
+        plan_path.write_text(content, encoding="utf-8")
+        return SearchDocument(
+            source_type="k6",
+            title=f"performance plan for {plan.issue_key}",
+            url=str(plan_path),
+            content=content,
+            metadata={
+                "issue_key": plan.issue_key,
+                "service": plan.service,
+                "workflow_mode": decision.execution_mode,
+                "plan_path": str(plan_path),
+            },
+        )
+
+    @staticmethod
+    def _plan_preview(content: str, max_lines: int = 8) -> str:
+        lines = [line for line in (content or "").splitlines() if line.strip()]
+        return "\n".join(lines[:max_lines])
+
     def _jira_comment_body(
         self,
         plan: TicketPerformancePlan,
         report_document: SearchDocument,
         grafana_document: SearchDocument | None,
         selected_skills: list[ProjectSkill],
+        decision: WorkflowDecision,
+        metrics: dict[str, str] | None = None,
+        summary_path: Path | None = None,
     ) -> str:
+        metrics = metrics or {}
         lines = [
             f"Performance workflow completed for {plan.issue_key}.",
             "",
@@ -2213,10 +2479,23 @@ export function handleSummary(data) {{
             f"- Service: {plan.service}",
             f"- Endpoint: {plan.endpoint_method} {plan.endpoint_path}",
             f"- Test type: {plan.test_type}",
-            f"- Report: {report_document.url}",
+            f"- Workflow mode: {decision.execution_mode}",
+            f"- Output: {report_document.url}",
+            f"- Latency SLO: {self._latency_status(metrics, plan)} (p95 {self._format_latency_value(metrics.get('p95'))} vs target < {plan.sla_p95_ms} ms)",
+            f"- HTTP failures: {self._format_percentage(metrics.get('failure_rate'))} (target < {plan.error_rate_threshold * 100:.2f}%)",
+            f"- Acceptance checks: {self._format_percentage(metrics.get('check_rate'))} pass",
+            f"- Outcome: {self._business_outcome(metrics, plan)}",
+            f"- Next decision: {self._next_decision(metrics, plan)}",
         ]
         if grafana_document is not None:
             lines.append(f"- Grafana: {grafana_document.url}")
+        evidence_gaps = self._acceptance_evidence_gaps(plan, metrics, summary_path) if summary_path is not None else []
+        if evidence_gaps:
+            lines.extend(["", "Acceptance gaps:"])
+            lines.extend(f"- {item}" for item in evidence_gaps)
+        if decision.rationale:
+            lines.extend(["", "Decision rationale:"])
+            lines.extend(f"- {item}" for item in decision.rationale)
         lines.extend(
             [
                 "",
@@ -2234,89 +2513,176 @@ export function handleSummary(data) {{
                 lines.append(f"- {trace}")
         return "\n".join(lines)
 
-    def _select_ticket_skills(
+    def _decide_ticket_workflow(
         self,
         ticket: SearchDocument,
         fields: dict[str, str],
-    ) -> list[ProjectSkill]:
-        ticket_text = self._ticket_selection_text(ticket, fields)
-        selected_names: list[str] = []
-        if self._ticket_needs_strategy(ticket_text):
-            selected_names.append("performance-testing-strategy")
-        if self._ticket_needs_k6(ticket_text):
-            selected_names.append("k6-best-practices")
-        if self._ticket_needs_analysis(ticket_text):
-            selected_names.append("performance-report-analysis")
-        if "k6-best-practices" not in selected_names:
-            selected_names.insert(0, "k6-best-practices")
-        return self.skill_catalog.for_names(selected_names)
+    ) -> WorkflowDecision | None:
+        summary = ticket.title.split(": ", 1)[1] if ": " in ticket.title else ticket.title
+        payload = self.responder.call_function(
+            system_prompt=(
+                "You are deciding how to execute a Jira-driven performance workflow. "
+                "Choose the exact ordered project skills and whether this ticket should stop at planning or continue to execution."
+            ),
+            user_prompt=(
+                f"Ticket key: {ticket.metadata.get('key', '')}\n"
+                f"Summary: {summary}\n"
+                f"Description:\n{ticket.content}\n\n"
+                f"User overrides: {fields}\n\n"
+                "Available skills:\n"
+                "- performance-testing-strategy: use when the ticket needs test planning, workload modeling, SLAs, datasets, traffic mix, baseline sizing, or deciding what kind of performance test to run.\n"
+                "- k6-best-practices: use when the ticket needs a runnable k6 script, concrete endpoint calls, thresholds, checks, scenarios, datasets, or execution guidance.\n"
+                "- performance-report-analysis: use when the ticket needs report writing, baseline comparison, business or executive summary, result interpretation, stakeholder communication, or post-run analysis.\n\n"
+                "Rules:\n"
+                "- Return 1 to 3 skills.\n"
+                "- Preserve execution order.\n"
+                "- execution_mode must be either plan_only or plan_then_run.\n"
+                "- Use plan_only when the ticket is primarily strategy, estimation, planning, workload sizing, or requirements definition and does not yet contain enough concrete execution detail.\n"
+                "- Use plan_then_run when the ticket is specific enough to generate and execute a k6 script.\n"
+                "- Include performance-testing-strategy before k6-best-practices when the ticket first needs planning.\n"
+                "- Include performance-report-analysis after k6-best-practices when the ticket explicitly asks for analysis, comparison, or executive/business reporting.\n"
+                "- If the ticket is about generating or running a k6 workflow, include k6-best-practices.\n"
+                "- Use only these exact skill names.\n"
+            ),
+            function_name="decide_ticket_workflow",
+            function_description="Choose the execution mode and exact ordered project skills required for this Jira performance workflow.",
+            parameters=self._ticket_workflow_decision_function_schema(),
+            temperature=0.1,
+        )
+        if not isinstance(payload, dict):
+            return self._fallback_ticket_workflow_decision(ticket, fields)
+        ordered_skills = self._normalize_selected_skill_names(payload.get("ordered_skills"))
+        execution_mode = str(payload.get("execution_mode") or "").strip()
+        rationale = [str(item) for item in (payload.get("rationale") or []) if str(item).strip()]
+        if execution_mode not in {"plan_only", "plan_then_run"} or not ordered_skills:
+            return self._fallback_ticket_workflow_decision(ticket, fields)
+        return WorkflowDecision(
+            ordered_skills=ordered_skills,
+            execution_mode=execution_mode,
+            rationale=rationale[:6],
+        )
 
-    @staticmethod
-    def _ticket_selection_text(ticket: SearchDocument, fields: dict[str, str]) -> str:
-        field_text = "\n".join(f"{key}: {value}" for key, value in sorted(fields.items()))
-        return "\n".join(
-            part for part in (ticket.title, ticket.content or "", field_text) if part
+    def _fallback_ticket_workflow_decision(
+        self,
+        ticket: SearchDocument,
+        fields: dict[str, str],
+    ) -> WorkflowDecision | None:
+        """Choose a safe deterministic workflow when model tool-calling is unavailable."""
+        summary = ticket.title.split(": ", 1)[1] if ": " in ticket.title else ticket.title
+        combined = " ".join(
+            [
+                summary,
+                ticket.content,
+                " ".join(f"{key} {value}" for key, value in fields.items()),
+            ]
         ).lower()
+        if not combined.strip():
+            return None
 
-    @staticmethod
-    def _ticket_needs_strategy(ticket_text: str) -> bool:
-        strategy_keywords = (
+        planning_terms = (
+            "strategy",
+            "planning",
+            "plan",
+            "estimate",
+            "estimation",
+            "workload",
+            "sizing",
+            "traffic",
             "sla",
-            "p95",
-            "p99",
-            "latency",
-            "throughput",
-            "error rate",
-            "vus",
-            "virtual users",
-            "concurrent users",
-            "duration",
-            "dataset",
-            "acceptance",
-            "criteria",
-            "smoke",
-            "load",
-            "stress",
-            "spike",
-            "soak",
-            "endurance",
-        )
-        return any(keyword in ticket_text for keyword in strategy_keywords)
-
-    @staticmethod
-    def _ticket_needs_k6(ticket_text: str) -> bool:
-        if re.search(r"\b(get|post|put|patch|delete)\s+/[\w\-/{},:.]+\b", ticket_text):
-            return True
-        k6_keywords = (
-            "k6",
-            "script",
-            "scenario",
-            "endpoint",
-            "traceparent",
-            "sharedarray",
-            "check",
-            "threshold",
-            "test",
-        )
-        return any(keyword in ticket_text for keyword in k6_keywords)
-
-    @staticmethod
-    def _ticket_needs_analysis(ticket_text: str) -> bool:
-        analysis_keywords = (
-            "report",
-            "analysis",
             "baseline",
+            "requirements",
+        )
+        execution_terms = (
+            "k6",
+            "load test",
+            "stress test",
+            "soak test",
+            "performance test",
+            "run",
+            "execute",
+            "script",
+            "endpoint",
+            "api/",
+            "post ",
+            "get ",
+            "put ",
+            "delete ",
+            "vus",
+            "duration",
+        )
+        report_terms = (
+            "analysis",
+            "analyze",
             "compare",
             "comparison",
-            "grafana",
-            "dashboard",
+            "report",
             "executive",
-            "business",
-            "summary",
+            "business summary",
             "stakeholder",
-            "result",
         )
-        return any(keyword in ticket_text for keyword in analysis_keywords)
+
+        has_planning = any(term in combined for term in planning_terms)
+        has_execution = any(term in combined for term in execution_terms)
+        has_report = any(term in combined for term in report_terms)
+        has_concrete_endpoint = bool(
+            re.search(r"\b(?:GET|POST|PUT|PATCH|DELETE)\s+/\S+", ticket.content, re.IGNORECASE)
+            or re.search(r"\bendpoint\s*:\s*\S+", ticket.content, re.IGNORECASE)
+        )
+        has_runtime_shape = bool(
+            re.search(r"\bvus?\s*[:=]?\s*\d+", ticket.content, re.IGNORECASE)
+            or re.search(r"\bduration\s*[:=]?\s*\d+\s*(?:s|m|h|sec|secs|seconds|minutes?)\b", ticket.content, re.IGNORECASE)
+        )
+        recovered_plan = self._build_plan_from_ticket_text(ticket, fields) or self._build_plan_from_ticket_and_repo_docs(ticket, fields)
+        recovered_endpoint = bool(
+            recovered_plan
+            and recovered_plan.endpoint_method in {"GET", "POST", "PUT", "PATCH", "DELETE"}
+            and recovered_plan.endpoint_path
+            and recovered_plan.endpoint_path != "/"
+        )
+
+        if not (has_planning or has_execution or has_report or has_concrete_endpoint or has_runtime_shape or recovered_endpoint):
+            return None
+
+        ordered_skills: list[str] = []
+        if has_planning or has_concrete_endpoint or has_runtime_shape or recovered_endpoint:
+            ordered_skills.append("performance-testing-strategy")
+        if has_execution or has_concrete_endpoint or recovered_endpoint:
+            ordered_skills.append("k6-best-practices")
+        if has_report:
+            ordered_skills.append("performance-report-analysis")
+        if not ordered_skills:
+            ordered_skills.append("performance-testing-strategy")
+
+        execution_mode = "plan_then_run" if ("k6-best-practices" in ordered_skills and (has_concrete_endpoint or recovered_endpoint)) else "plan_only"
+        LOGGER.info(
+            "Workflow decision fallback used: issue=%s mode=%s skills=%s",
+            ticket.metadata.get("key", ""),
+            execution_mode,
+            ",".join(ordered_skills),
+        )
+        return WorkflowDecision(
+            ordered_skills=ordered_skills,
+            execution_mode=execution_mode,
+            rationale=[
+                "OpenAI workflow decision was unavailable or invalid, so deterministic ticket keyword rules selected the workflow.",
+            ],
+        )
+
+    @staticmethod
+    def _normalize_selected_skill_names(selected: Any) -> list[str]:
+        allowed = {
+            "performance-testing-strategy",
+            "k6-best-practices",
+            "performance-report-analysis",
+        }
+        if not isinstance(selected, list):
+            return []
+        normalized: list[str] = []
+        for item in selected:
+            name = str(item or "").strip()
+            if name in allowed and name not in normalized:
+                normalized.append(name)
+        return normalized
 
     def _skill_bundle_if_selected(self, skill_name: str, selected_skill_names: list[str]) -> SkillBundle:
         if skill_name not in selected_skill_names:
@@ -2324,65 +2690,68 @@ export function handleSummary(data) {{
         return self._load_skill_bundle(skill_name)
 
     @staticmethod
-    def _extract_endpoint(text: str) -> tuple[str, str]:
-        match = re.search(r"\b(GET|POST|PUT|PATCH|DELETE)\s+([/\w\-{}:.]+)", text, re.IGNORECASE)
-        if not match:
-            return "GET", "/"
-        return match.group(1).upper(), match.group(2)
-
-    def _infer_service(self, text: str, endpoint_path: str) -> str:
-        lowered = text.lower()
-        for service in self.workspace.discover_services():
-            if service in lowered:
-                return service
-        path_parts = [part for part in endpoint_path.strip("/").split("/") if part]
-        for part in path_parts:
-            if part.lower() in {"api", "v1", "v2"}:
-                continue
-            return re.sub(r"[^a-z0-9_-]", "", part.lower()) or "service"
-        return "service"
-
-    @staticmethod
-    def _extract_int(text: str, pattern: str, default: int) -> int:
-        match = re.search(pattern, text, re.IGNORECASE)
-        return int(match.group(1)) if match else default
-
-    @staticmethod
-    def _extract_float(text: str, pattern: str, default: float) -> float:
-        match = re.search(pattern, text, re.IGNORECASE)
-        return float(match.group(1)) if match else default
-
-    @staticmethod
-    def _extract_duration(text: str) -> str | None:
-        match = re.search(r"\b(\d+\s*[smhd])\b", text, re.IGNORECASE)
-        if not match:
-            return None
-        return match.group(1).replace(" ", "")
+    def _ticket_workflow_decision_function_schema() -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "execution_mode": {
+                    "type": "string",
+                    "enum": ["plan_only", "plan_then_run"],
+                },
+                "ordered_skills": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": [
+                            "performance-testing-strategy",
+                            "k6-best-practices",
+                            "performance-report-analysis",
+                        ],
+                    },
+                    "minItems": 1,
+                    "maxItems": 3,
+                },
+                "rationale": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+            },
+            "required": ["execution_mode", "ordered_skills"],
+            "additionalProperties": False,
+        }
 
     @staticmethod
-    def _extract_dataset(text: str) -> str | None:
-        match = re.search(r"\b([\w.-]+\.(?:json|csv))\b", text, re.IGNORECASE)
-        return match.group(1) if match else None
-
-    @staticmethod
-    def _extract_test_type(text: str) -> str:
-        lowered = text.lower()
-        for candidate in ("smoke", "load", "stress", "spike", "soak", "endurance"):
-            if candidate in lowered:
-                return candidate
-        return "load"
-
-    @staticmethod
-    def _extract_acceptance_criteria(text: str) -> list[str]:
-        criteria: list[str] = []
-        for line in text.splitlines():
-            cleaned = line.strip(" -*\t")
-            if not cleaned:
-                continue
-            lowered = cleaned.lower()
-            if any(keyword in lowered for keyword in ("acceptance", "criteria", "validate", "status", "token", "sla")):
-                criteria.append(cleaned)
-        return criteria[:5]
+    def _ticket_plan_function_schema() -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "service": {"type": "string"},
+                "endpoint_method": {"type": "string"},
+                "endpoint_path": {"type": "string"},
+                "sla_p95_ms": {"type": "integer"},
+                "error_rate_percent": {"type": "number"},
+                "vus": {"type": "integer"},
+                "duration": {"type": "string"},
+                "dataset": {"type": "string"},
+                "test_type": {"type": "string"},
+                "criteria": {"type": "array", "items": {"type": "string"}},
+                "strategy_notes": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": [
+                "service",
+                "endpoint_method",
+                "endpoint_path",
+                "sla_p95_ms",
+                "error_rate_percent",
+                "vus",
+                "duration",
+                "dataset",
+                "test_type",
+                "criteria",
+                "strategy_notes",
+            ],
+            "additionalProperties": False,
+        }
 
     def _dataset_relative_path(self, dataset: str) -> str:
         candidate = Path(dataset)
@@ -2401,11 +2770,282 @@ export function handleSummary(data) {{
         }
         return defaults.get(service, "http://127.0.0.1:3001")
 
-    def _load_skill_text(self, skill_name: str) -> str:
-        skill = self.skill_catalog.get(skill_name)
-        if skill is None or not skill.skill_file.exists():
-            return ""
-        return skill.skill_file.read_text(encoding="utf-8", errors="ignore")
+    def _load_repo_docs_context(self) -> str:
+        roots = [self.workspace.project_root, self.workspace.project_root.parent]
+        candidate_paths: list[Path] = []
+        seen: set[Path] = set()
+        preferred_suffixes = {
+            "website/README.md",
+            "website/README.es.md",
+            "website/docs/README.md",
+            "website/docs/architecture/ARCHITECTURE.md",
+            "website/docs/getting-started/QUICK_START.md",
+            "website/observability/README.md",
+        }
+
+        def add_candidate(path: Path) -> None:
+            resolved = path.resolve()
+            if resolved in seen or not resolved.exists() or resolved.suffix.lower() != ".md":
+                return
+            seen.add(resolved)
+            candidate_paths.append(resolved)
+
+        for root in roots:
+            for suffix in preferred_suffixes:
+                add_candidate(root / suffix)
+            website_root = (root / "website").resolve()
+            if not website_root.exists():
+                continue
+            for path in website_root.rglob("*.md"):
+                try:
+                    relative = path.resolve().relative_to(website_root).as_posix().lower()
+                except ValueError:
+                    relative = path.name.lower()
+                if any(
+                    token in relative
+                    for token in (
+                        "readme",
+                        "architecture",
+                        "quick_start",
+                        "quick-start",
+                        "installation",
+                        "troubleshooting",
+                        "observability",
+                    )
+                ):
+                    add_candidate(path)
+        parts: list[str] = []
+        for path in candidate_paths:
+            if not path.exists():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore").strip()
+            except OSError:
+                continue
+            if text:
+                try:
+                    label = path.relative_to(self.workspace.project_root).as_posix()
+                except ValueError:
+                    try:
+                        label = path.relative_to(self.workspace.project_root.parent).as_posix()
+                    except ValueError:
+                        label = path.name
+                parts.append(f"[{label}]\n{text}")
+        return "\n\n".join(parts)
+
+    @staticmethod
+    def _normalize_service_name(service: str) -> str:
+        normalized = (service or "").strip().lower()
+        aliases = {
+            "payments-service": "payments",
+            "payment-service": "payments",
+            "payment": "payments",
+            "orders-service": "orders",
+            "order-service": "orders",
+            "order": "orders",
+            "cart-service": "cart",
+            "products-service": "products",
+            "product-service": "products",
+            "users-api": "auth",
+            "users-service": "auth",
+            "user-service": "auth",
+            "users": "auth",
+        }
+        return aliases.get(normalized, normalized)
+
+    def _infer_service_from_issue(self, summary: str, description: str) -> str:
+        lowered = f"{summary}\n{description}".lower()
+        service_targets = {
+            "users-api": "auth",
+            "users-service": "auth",
+            "auth": "auth",
+            "products-service": "products",
+            "products": "products",
+            "cart-service": "cart",
+            "cart": "cart",
+            "orders-service": "orders",
+            "orders": "orders",
+            "payments-service": "payments",
+            "payments": "payments",
+        }
+        for token, service in service_targets.items():
+            if token in lowered:
+                return service
+        return ""
+
+    def _repo_service_context(self, repo_context: str, service: str) -> str:
+        alias_map = {
+            "auth": ("users-api", "users-service", "auth"),
+            "products": ("products-service", "products"),
+            "cart": ("cart-service", "cart"),
+            "orders": ("orders-service", "orders"),
+            "payments": ("payments-service", "payments"),
+        }
+        lines = repo_context.splitlines()
+        selected: list[str] = []
+        for line in lines:
+            lowered = line.lower()
+            if any(alias in lowered for alias in alias_map.get(service, ())):
+                selected.append(line)
+        if selected:
+            return "\n".join(selected)
+
+        service_patterns = {
+            "auth": r"localhost:3001|/api/auth|users-api|users-service",
+            "products": r"localhost:3002|/api/products|products-service",
+            "cart": r"localhost:3003|/api/cart|cart-service",
+            "orders": r"localhost:3004|/api/orders|orders-service",
+            "payments": r"localhost:3005|/api/payments|payments-service",
+        }
+        pattern = service_patterns.get(service, "")
+        if pattern:
+            for line in lines:
+                if re.search(pattern, line, re.IGNORECASE):
+                    selected.append(line)
+        return "\n".join(selected)
+
+    def _extract_repo_slo_int(self, repo_context: str, service: str, field_name: str) -> int:
+        if field_name != "p95":
+            return 0
+        service_context = self._repo_service_context(repo_context, service)
+        match = re.search(r"<\s*(\d+)\s*ms", service_context, re.IGNORECASE)
+        if match:
+            try:
+                return int(match.group(1))
+            except (TypeError, ValueError):
+                return 0
+        service_aliases = {
+            "auth": ("users-api", "users-service"),
+            "products": ("products-service",),
+            "cart": ("cart-service",),
+            "orders": ("orders-service",),
+            "payments": ("payments-service",),
+        }
+        aliases = service_aliases.get(service, ())
+        lines = [line.strip() for line in repo_context.splitlines()]
+        for index, line in enumerate(lines):
+            lowered = line.lower()
+            if not any(alias in lowered for alias in aliases):
+                continue
+            for candidate in lines[index + 1 : index + 8]:
+                match = re.search(r"<\s*(\d+)\s*ms", candidate, re.IGNORECASE)
+                if match:
+                    try:
+                        return int(match.group(1))
+                    except (TypeError, ValueError):
+                        return 0
+        return 0
+
+    def _extract_repo_slo_float(self, repo_context: str, service: str, field_name: str) -> float:
+        if field_name != "error_rate":
+            return 0
+        service_context = self._repo_service_context(repo_context, service)
+        match = re.search(r"<\s*(\d+(?:\.\d+)?)\s*%", service_context, re.IGNORECASE)
+        if match:
+            try:
+                return float(match.group(1))
+            except (TypeError, ValueError):
+                return 0
+        service_aliases = {
+            "auth": ("users-api", "users-service"),
+            "products": ("products-service",),
+            "cart": ("cart-service",),
+            "orders": ("orders-service",),
+            "payments": ("payments-service",),
+        }
+        aliases = service_aliases.get(service, ())
+        lines = [line.strip() for line in repo_context.splitlines()]
+        for index, line in enumerate(lines):
+            lowered = line.lower()
+            if not any(alias in lowered for alias in aliases):
+                continue
+            for candidate in lines[index + 1 : index + 8]:
+                match = re.search(r"<\s*(\d+(?:\.\d+)?)\s*%", candidate, re.IGNORECASE)
+                if match:
+                    try:
+                        return float(match.group(1))
+                    except (TypeError, ValueError):
+                        return 0
+        return 0
+
+    def _extract_service_scoped_slo_int(self, text: str, service: str, field_name: str) -> int:
+        if field_name != "p95":
+            return 0
+        aliases = self._service_aliases(service)
+        lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+        matched_ranges: list[tuple[int, int]] = []
+        for index, line in enumerate(lines):
+            lowered = line.lower()
+            if not any(alias in lowered for alias in aliases):
+                continue
+            matched_ranges.append((index, min(index + 8, len(lines))))
+            same_line_match = re.search(r"<\s*(\d+)\s*ms", line, re.IGNORECASE)
+            if same_line_match:
+                try:
+                    return int(same_line_match.group(1))
+                except (TypeError, ValueError):
+                    return 0
+            for candidate in lines[index + 1 : index + 8]:
+                match = re.search(r"<\s*(\d+)\s*ms", candidate, re.IGNORECASE)
+                if match:
+                    try:
+                        return int(match.group(1))
+                    except (TypeError, ValueError):
+                        return 0
+        for start, end in matched_ranges:
+            block = "\n".join(lines[start:end])
+            match = re.search(r"<\s*(\d+)\s*ms", block, re.IGNORECASE)
+            if match:
+                try:
+                    return int(match.group(1))
+                except (TypeError, ValueError):
+                    return 0
+        return 0
+
+    def _extract_service_scoped_slo_float(self, text: str, service: str, field_name: str) -> float:
+        if field_name != "error_rate":
+            return 0
+        aliases = self._service_aliases(service)
+        lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+        matched_ranges: list[tuple[int, int]] = []
+        for index, line in enumerate(lines):
+            lowered = line.lower()
+            if not any(alias in lowered for alias in aliases):
+                continue
+            matched_ranges.append((index, min(index + 8, len(lines))))
+            same_line_match = re.search(r"<\s*(\d+(?:\.\d+)?)\s*%", line, re.IGNORECASE)
+            if same_line_match:
+                try:
+                    return float(same_line_match.group(1))
+                except (TypeError, ValueError):
+                    return 0
+            for candidate in lines[index + 1 : index + 8]:
+                match = re.search(r"<\s*(\d+(?:\.\d+)?)\s*%", candidate, re.IGNORECASE)
+                if match:
+                    try:
+                        return float(match.group(1))
+                    except (TypeError, ValueError):
+                        return 0
+        for start, end in matched_ranges:
+            block = "\n".join(lines[start:end])
+            match = re.search(r"<\s*(\d+(?:\.\d+)?)\s*%", block, re.IGNORECASE)
+            if match:
+                try:
+                    return float(match.group(1))
+                except (TypeError, ValueError):
+                    return 0
+        return 0
+
+    @staticmethod
+    def _service_aliases(service: str) -> tuple[str, ...]:
+        alias_map = {
+            "auth": ("users-api", "users-service", "auth"),
+            "products": ("products-service", "products"),
+            "cart": ("cart-service", "cart"),
+            "orders": ("orders-service", "orders"),
+            "payments": ("payments-service", "payments"),
+        }
+        return alias_map.get(service, (service,))
 
     def _load_skill_bundle(self, skill_name: str) -> SkillBundle:
         skill = self.skill_catalog.get(skill_name)
@@ -2504,27 +3144,6 @@ export function handleSummary(data) {{
         return issues
 
     @staticmethod
-    def _extract_json_object(text: str) -> dict[str, Any] | None:
-        cleaned = (text or "").strip()
-        if not cleaned:
-            return None
-        if cleaned.startswith("```"):
-            cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
-            cleaned = re.sub(r"\s*```$", "", cleaned)
-        try:
-            payload = json.loads(cleaned)
-            return payload if isinstance(payload, dict) else None
-        except json.JSONDecodeError:
-            match = re.search(r"\{.*\}", cleaned, re.DOTALL)
-            if not match:
-                return None
-            try:
-                payload = json.loads(match.group(0))
-                return payload if isinstance(payload, dict) else None
-            except json.JSONDecodeError:
-                return None
-
-    @staticmethod
     def _clean_generated_script(text: str) -> str:
         cleaned = (text or "").strip()
         if cleaned.startswith("```"):
@@ -2549,21 +3168,46 @@ export function handleSummary(data) {{
         )
 
     def _severity_label(self, metrics: dict[str, str], plan: TicketPerformancePlan) -> str:
+        if self._performance_slo_passed(metrics, plan) and not self._acceptance_checks_passed(metrics):
+            return "Medium"
         return "Low" if self._passed(metrics, plan) else "High"
 
     def _business_risk(self, metrics: dict[str, str], plan: TicketPerformancePlan) -> str:
+        if self._performance_slo_passed(metrics, plan) and not self._acceptance_checks_passed(metrics):
+            return "Moderate"
         return "Low" if self._passed(metrics, plan) else "Elevated"
 
-    def _passed(self, metrics: dict[str, str], plan: TicketPerformancePlan) -> bool:
+    def _business_outcome(self, metrics: dict[str, str], plan: TicketPerformancePlan) -> str:
+        if self._passed(metrics, plan):
+            return "The service stayed within the target envelope and the acceptance checks passed."
+        if self._performance_slo_passed(metrics, plan) and not self._acceptance_checks_passed(metrics):
+            return "Performance SLOs passed, but the acceptance checks did not fully pass."
+        return "The service needs follow-up before sign-off."
+
+    def _next_decision(self, metrics: dict[str, str], plan: TicketPerformancePlan) -> str:
+        if self._passed(metrics, plan):
+            return "Ticket can move forward with monitoring."
+        if self._performance_slo_passed(metrics, plan) and not self._acceptance_checks_passed(metrics):
+            return "Keep the ticket open and triage the failing acceptance checks before release."
+        return "Keep the ticket open and triage latency/errors before release."
+
+    def _performance_slo_passed(self, metrics: dict[str, str], plan: TicketPerformancePlan) -> bool:
         p95 = self._float_or_none(metrics.get("p95"))
         failure_rate = self._float_or_none(metrics.get("failure_rate"))
-        if p95 is None:
-            return False
-        if p95 > plan.sla_p95_ms:
+        if p95 is None or p95 > plan.sla_p95_ms:
             return False
         if failure_rate is not None and failure_rate > plan.error_rate_threshold:
             return False
         return True
+
+    def _acceptance_checks_passed(self, metrics: dict[str, str]) -> bool:
+        check_rate = self._float_or_none(metrics.get("check_rate"))
+        if check_rate is None:
+            return False
+        return check_rate >= 0.99
+
+    def _passed(self, metrics: dict[str, str], plan: TicketPerformancePlan) -> bool:
+        return self._performance_slo_passed(metrics, plan) and self._acceptance_checks_passed(metrics)
 
     @staticmethod
     def _float_or_none(value: str | None) -> float | None:
@@ -2583,6 +3227,197 @@ export function handleSummary(data) {{
     @staticmethod
     def _generate_script_path_from_report(plan: TicketPerformancePlan) -> str:
         return f"tests/{plan.service}/{plan.service}.{plan.issue_key.lower()}.test.js"
+
+    def _relative_workspace_path(self, path: Path) -> str:
+        try:
+            return str(path.resolve().relative_to(self.workspace.project_root.resolve())).replace("\\", "/")
+        except ValueError:
+            return path.name
+
+    @staticmethod
+    def _format_percentage(value: str | None) -> str:
+        if value in (None, "", "n/a"):
+            return "n/a"
+        try:
+            return f"{float(value) * 100:.1f}%"
+        except ValueError:
+            return str(value)
+
+    @staticmethod
+    def _format_latency_value(value: str | None) -> str:
+        if value in (None, "", "n/a"):
+            return "n/a"
+        try:
+            return f"{float(value):.3f} ms"
+        except ValueError:
+            return str(value)
+
+    def _latency_status(self, metrics: dict[str, str], plan: TicketPerformancePlan) -> str:
+        p95 = self._float_or_none(metrics.get("p95"))
+        if p95 is None:
+            return "not proven"
+        return "passed" if p95 <= plan.sla_p95_ms else "failed"
+
+    def _acceptance_evidence_gaps(
+        self,
+        plan: TicketPerformancePlan,
+        metrics: dict[str, str],
+        summary_path: Path,
+    ) -> list[str]:
+        gaps: list[str] = []
+        criteria_text = " ".join(plan.criteria).lower()
+        if "80%" in criteria_text or "20%" in criteria_text or "approved" in criteria_text or "rejected" in criteria_text:
+            groups = self._load_root_group_checks(summary_path)
+            if not any("approved" in name.lower() or "rejected" in name.lower() for name in groups):
+                gaps.append("The run does not prove the requested approved/rejected scenario split such as 80/20.")
+        if "traceparent" in criteria_text or "tempo" in criteria_text:
+            gaps.append("The run does not include evidence that traceparent propagation and Tempo trace visibility were verified.")
+        if self._performance_slo_passed(metrics, plan) and not self._acceptance_checks_passed(metrics):
+            gaps.append("Performance metrics passed, but one or more acceptance checks still failed.")
+        return gaps
+
+    @staticmethod
+    def _load_root_group_checks(summary_path: Path) -> list[str]:
+        try:
+            payload = json.loads(summary_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return []
+        root_group = payload.get("root_group", {})
+        if not isinstance(root_group, dict):
+            return []
+        groups = root_group.get("groups", {})
+        if not isinstance(groups, dict):
+            return []
+        names: list[str] = []
+        for group in groups.values():
+            if not isinstance(group, dict):
+                continue
+            group_name = str(group.get("name") or "").strip()
+            if group_name:
+                names.append(group_name)
+            checks = group.get("checks", {})
+            if isinstance(checks, dict):
+                names.extend(str(name) for name in checks.keys())
+        return names
+
+    @staticmethod
+    def _baseline_quality_note(report_content: str) -> str:
+        if "Latency p95: current=" not in report_content:
+            return ""
+        if "baseline=0 delta=n/a" in report_content:
+            return "The latest baseline file does not contain meaningful latency values, so the comparison is not decision-grade."
+        return ""
+
+    @staticmethod
+    def _extract_endpoint(text: str) -> tuple[str, str]:
+        method_path = re.search(r"\b(GET|POST|PUT|PATCH|DELETE)\s+((?:https?://[^\s/]+)?/\S*)", text, re.IGNORECASE)
+        if method_path:
+            method = method_path.group(1).upper()
+            path = method_path.group(2).strip()
+            if path.startswith("http://") or path.startswith("https://"):
+                slash_index = path.find("/", path.find("//") + 2)
+                path = path[slash_index:] if slash_index != -1 else "/"
+            return method, path
+        endpoint_label = re.search(r"\bendpoint\s*:\s*(GET|POST|PUT|PATCH|DELETE)?\s*((?:https?://[^\s/]+)?/\S+)", text, re.IGNORECASE)
+        if endpoint_label:
+            method = (endpoint_label.group(1) or "GET").upper()
+            path = endpoint_label.group(2).strip()
+            if path.startswith("http://") or path.startswith("https://"):
+                slash_index = path.find("/", path.find("//") + 2)
+                path = path[slash_index:] if slash_index != -1 else "/"
+            return method, path
+        return "GET", "/"
+
+    @staticmethod
+    def _infer_service(text: str, endpoint_path: str) -> str:
+        lowered = text.lower()
+        service_keywords = {
+            "payments": ("payments", "/api/payments", "payment", "card declined", "transaction_id"),
+            "auth": ("auth", "/api/auth", "login", "token"),
+            "products": ("products", "/api/products", "catalog", "inventory"),
+            "cart": ("cart", "/api/cart", "basket", "checkout cart"),
+            "orders": ("orders", "/api/orders", "order id", "order status"),
+        }
+        for service, hints in service_keywords.items():
+            if any(hint in lowered or hint in endpoint_path.lower() for hint in hints):
+                return service
+        return ""
+
+    @staticmethod
+    def _extract_int(text: str, pattern: str, default: int) -> int:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if not match:
+            return default
+        try:
+            return int(match.group(1))
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _extract_float(text: str, pattern: str, default: float) -> float:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if not match:
+            return default
+        try:
+            return float(match.group(1))
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _extract_duration(text: str) -> str | None:
+        match = re.search(r"\bduration\s*[:=]?\s*(\d+\s*(?:ms|s|m|h|sec|secs|seconds|minutes?|hours?))\b", text, re.IGNORECASE)
+        if match:
+            return re.sub(r"\s+", "", match.group(1))
+        return None
+
+    @staticmethod
+    def _extract_dataset(text: str) -> str | None:
+        match = re.search(r"\bdataset\s*[:=]?\s*([A-Za-z0-9_./-]+\.(?:json|csv))\b", text, re.IGNORECASE)
+        if match:
+            return Path(match.group(1)).name
+        return None
+
+    @staticmethod
+    def _extract_test_type(text: str) -> str:
+        lowered = text.lower()
+        if "stress" in lowered:
+            return "stress"
+        if "soak" in lowered:
+            return "soak"
+        if "spike" in lowered:
+            return "spike"
+        return "load"
+
+    @staticmethod
+    def _extract_acceptance_criteria(text: str) -> list[str]:
+        criteria: list[str] = []
+        for raw_line in (text or "").splitlines():
+            line = raw_line.strip(" -\t")
+            if not line:
+                continue
+            lowered = line.lower()
+            if any(
+                token in lowered
+                for token in (
+                    "approved",
+                    "rejected",
+                    "transaction_id",
+                    "card declined",
+                    "traceparent",
+                    "tempo",
+                    "80%",
+                    "20%",
+                    "201",
+                    "status",
+                    "{ service:",
+                )
+            ):
+                criteria.append(line)
+        deduped: list[str] = []
+        for item in criteria:
+            if item not in deduped:
+                deduped.append(item)
+        return deduped[:8]
 
 
 class K6TestConnector(BaseConnector):

@@ -1,0 +1,588 @@
+{
+  "title": "Poleras Store · SLO — Error Budget & Burn Rate",
+  "uid": "ecommerce-slo-v1",
+  "description": "Service Level Objectives para Poleras Store. Muestra cumplimiento SLO, error budget restante y burn rate. Si el burn rate supera 14.4x, el budget mensual se agota en menos de 2 horas.",
+  "tags": ["ecommerce", "slo", "error-budget", "production"],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "refresh": "30s",
+  "time": { "from": "now-3h", "to": "now" },
+  "links": [
+    { "title": "RED Metrics", "url": "/d/ecommerce-apm-v1", "type": "link", "icon": "external link", "tooltip": "Rate / Errors / Duration", "keepTime": true, "targetBlank": false },
+    { "title": "Logs", "url": "/d/ecommerce-logs-v1", "type": "link", "icon": "external link", "tooltip": "Error Streams y User Journey", "keepTime": true, "targetBlank": false },
+    { "title": "Distributed Tracing", "url": "/d/ecommerce-traces-v1", "type": "link", "icon": "external link", "tooltip": "Service Map y trazas end-to-end", "keepTime": true, "targetBlank": false }
+  ],
+  "panels": [
+
+    { "type": "row", "title": "🎯 SLO Status — Cumplimiento Actual", "id": 1, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }, "collapsed": false },
+
+    {
+      "id": 10, "type": "stat",
+      "title": "Availability SLI",
+      "description": "SLO target: 99.9% de requests exitosos (non-5xx). Umbral de alerta: < 99.9%",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 8, "x": 0, "y": 1 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value_and_name"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 3,
+          "min": 98,
+          "max": 100,
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 99 },
+              { "color": "green", "value": 99.9 }
+            ]
+          },
+          "mappings": []
+        }
+      },
+      "targets": [{
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "expr": "sli:availability:ratio_rate5m * 100",
+        "legendFormat": "Availability",
+        "refId": "A"
+      }]
+    },
+
+    {
+      "id": 11, "type": "stat",
+      "title": "Latency SLI (% requests < 500ms)",
+      "description": "SLO target: 95% de requests bajo 500ms. Umbral de alerta: < 95%",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 8, "x": 8, "y": 1 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value_and_name"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 2,
+          "min": 80,
+          "max": 100,
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 93 },
+              { "color": "green", "value": 95 }
+            ]
+          }
+        }
+      },
+      "targets": [{
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "expr": "sli:latency:ratio_rate5m * 100",
+        "legendFormat": "Latency SLI",
+        "refId": "A"
+      }]
+    },
+
+    {
+      "id": 12, "type": "stat",
+      "title": "Database SLI",
+      "description": "SLO target: 99.9% de queries exitosas. Umbral de alerta: < 99.9%",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 8, "x": 16, "y": 1 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value_and_name"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 3,
+          "min": 98,
+          "max": 100,
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 99 },
+              { "color": "green", "value": 99.9 }
+            ]
+          }
+        }
+      },
+      "targets": [{
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "expr": "sli:database:success_ratio_rate5m * 100",
+        "legendFormat": "DB Success",
+        "refId": "A"
+      }]
+    },
+
+    { "type": "row", "title": "💰 Error Budget — Presupuesto de Errores Restante", "id": 2, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 6 }, "collapsed": false },
+
+    {
+      "id": 20, "type": "gauge",
+      "title": "Availability Error Budget Restante",
+      "description": "Budget disponible para el período actual. SLO 99.9% = 43.8 min/mes de downtime permitido. Si llega a 0%, cualquier error adicional viola el SLO.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 7 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "showThresholdLabels": true,
+        "showThresholdMarkers": true,
+        "minVizHeight": 75,
+        "minVizWidth": 75
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "min": 0,
+          "max": 100,
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 10 },
+              { "color": "green", "value": 25 }
+            ]
+          }
+        }
+      },
+      "targets": [{
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "expr": "clamp_min(slo:availability:error_budget_remaining * 100, 0)",
+        "legendFormat": "Availability Budget",
+        "refId": "A"
+      }]
+    },
+
+    {
+      "id": 21, "type": "gauge",
+      "title": "Latency Error Budget Restante",
+      "description": "Budget para latencia. SLO 95% = 5% de requests pueden superar 500ms. Si se agota, el equipo debería congelar despliegues.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 7 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "showThresholdLabels": true,
+        "showThresholdMarkers": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "min": 0,
+          "max": 100,
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 10 },
+              { "color": "green", "value": 25 }
+            ]
+          }
+        }
+      },
+      "targets": [{
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "expr": "clamp_min(slo:latency:error_budget_remaining * 100, 0)",
+        "legendFormat": "Latency Budget",
+        "refId": "A"
+      }]
+    },
+
+    {
+      "id": 22, "type": "timeseries",
+      "title": "Error Budget — Histórico (ventana actual)",
+      "description": "Evolución del error budget disponible. Una tendencia descendente rápida indica un problema activo. Si cualquier línea llega a 0% se viola el SLO.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 7 },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["last", "min"] },
+        "tooltip": { "mode": "multi" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "custom": { "lineWidth": 2, "fillOpacity": 15, "drawStyle": "line", "lineInterpolation": "smooth", "spanNulls": true },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 10 }, { "color": "red", "value": 0 }]
+          }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Availability Budget" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#73BF69" } }] },
+          { "matcher": { "id": "byName", "options": "Latency Budget" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#5794F2" } }] }
+        ]
+      },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "clamp_min(slo:availability:error_budget_remaining * 100, 0)", "legendFormat": "Availability Budget", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "clamp_min(slo:latency:error_budget_remaining * 100, 0)", "legendFormat": "Latency Budget", "refId": "B" }
+      ]
+    },
+
+    { "type": "row", "title": "🔥 Burn Rate — Velocidad de Consumo del Budget", "id": 3, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 15 }, "collapsed": false },
+
+    {
+      "id": 30, "type": "stat",
+      "title": "Availability Burn Rate (1h)",
+      "description": "1x = consumo normal (no hay problema). 14.4x = el budget mensual se agota en 2 horas → alerta crítica. > 1x y < 14.4x = degradación, investigar.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 16 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value_and_name"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 2,
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "orange", "value": 6 },
+              { "color": "red", "value": 14.4 }
+            ]
+          },
+          "custom": { "displayMode": "auto" }
+        },
+        "overrides": [{ "matcher": { "id": "byName", "options": "Availability Burn Rate" }, "properties": [{ "id": "displayName", "value": "Availability Burn Rate" }] }]
+      },
+      "targets": [{
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "expr": "slo:availability:burn_rate_1h",
+        "legendFormat": "Availability Burn Rate",
+        "refId": "A"
+      }]
+    },
+
+    {
+      "id": 31, "type": "stat",
+      "title": "Latency Burn Rate (1h)",
+      "description": "Mide si estamos consumiendo el error budget de latencia más rápido de lo esperado. 14.4x = critical.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 16 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value_and_name"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 2,
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "orange", "value": 6 },
+              { "color": "red", "value": 14.4 }
+            ]
+          }
+        }
+      },
+      "targets": [{
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "expr": "slo:latency:burn_rate_1h",
+        "legendFormat": "Latency Burn Rate",
+        "refId": "A"
+      }]
+    },
+
+    {
+      "id": 32, "type": "timeseries",
+      "title": "Burn Rate — Histórico (línea crítica: 14.4x)",
+      "description": "Si el burn rate cruza la línea roja de 14.4x, el budget mensual completo se agotará en menos de 2 horas.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max", "last"] },
+        "tooltip": { "mode": "multi" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 2,
+          "custom": { "lineWidth": 2, "fillOpacity": 10, "drawStyle": "line", "lineInterpolation": "smooth", "spanNulls": true },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 14.4 }]
+          }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Availability Burn Rate" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#FF9830" } }] },
+          { "matcher": { "id": "byName", "options": "Latency Burn Rate" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#5794F2" } }] },
+          { "matcher": { "id": "byName", "options": "Umbral Crítico (14.4x)" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#F2495C" } }, { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [8, 4] } }, { "id": "custom.lineWidth", "value": 2 }] }
+        ]
+      },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "slo:availability:burn_rate_1h", "legendFormat": "Availability Burn Rate", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "slo:latency:burn_rate_1h", "legendFormat": "Latency Burn Rate", "refId": "B" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "vector(14.4)", "legendFormat": "Umbral Crítico (14.4x)", "refId": "C" }
+      ]
+    },
+
+    { "type": "row", "title": "📈 SLI Trends — Historial de Cumplimiento", "id": 4, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 24 }, "collapsed": false },
+
+    {
+      "id": 40, "type": "timeseries",
+      "title": "Availability SLI (%) — Target: 99.9%",
+      "description": "Porcentaje de requests exitosos (non-5xx) en ventana deslizante de 5 minutos. La línea discontinua marca el SLO target de 99.9%.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 25 },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "min", "last"] },
+        "tooltip": { "mode": "multi" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 3,
+          "min": 98,
+          "max": 100,
+          "custom": { "lineWidth": 2, "fillOpacity": 15, "drawStyle": "line", "lineInterpolation": "smooth", "spanNulls": true },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 99 }, { "color": "green", "value": 99.9 }] }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Availability SLI" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#73BF69" } }] },
+          { "matcher": { "id": "byName", "options": "SLO Target (99.9%)" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#F2495C" } }, { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [8, 4] } }, { "id": "custom.lineWidth", "value": 2 }] }
+        ]
+      },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sli:availability:ratio_rate5m * 100", "legendFormat": "Availability SLI", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "vector(99.9)", "legendFormat": "SLO Target (99.9%)", "refId": "B" }
+      ]
+    },
+
+    {
+      "id": 41, "type": "timeseries",
+      "title": "Latency SLI (% requests < 500ms) — Target: 95%",
+      "description": "Porcentaje de requests que responden en menos de 500ms. La línea discontinua marca el SLO target de 95%.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 25 },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "min", "last"] },
+        "tooltip": { "mode": "multi" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 2,
+          "min": 80,
+          "max": 100,
+          "custom": { "lineWidth": 2, "fillOpacity": 15, "drawStyle": "line", "lineInterpolation": "smooth", "spanNulls": true }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Latency SLI" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#5794F2" } }] },
+          { "matcher": { "id": "byName", "options": "SLO Target (95%)" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#F2495C" } }, { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [8, 4] } }, { "id": "custom.lineWidth", "value": 2 }] }
+        ]
+      },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sli:latency:ratio_rate5m * 100", "legendFormat": "Latency SLI", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "vector(95)", "legendFormat": "SLO Target (95%)", "refId": "B" }
+      ]
+    },
+
+    {
+      "id": 42, "type": "timeseries",
+      "title": "Database SLI (% queries exitosas) — Target: 99.9%",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 33 },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "min", "last"] },
+        "tooltip": { "mode": "multi" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 3,
+          "min": 98,
+          "max": 100,
+          "custom": { "lineWidth": 2, "fillOpacity": 15, "drawStyle": "line", "lineInterpolation": "smooth", "spanNulls": true }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "DB SLI" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#B877D9" } }] },
+          { "matcher": { "id": "byName", "options": "SLO Target (99.9%)" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#F2495C" } }, { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [8, 4] } }] }
+        ]
+      },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sli:database:success_ratio_rate5m * 100", "legendFormat": "DB SLI", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "vector(99.9)", "legendFormat": "SLO Target (99.9%)", "refId": "B" }
+      ]
+    },
+
+    {
+      "id": 43, "type": "timeseries",
+      "title": "DB Latency SLI (% queries < 100ms) — Target: 95%",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 33 },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "min", "last"] },
+        "tooltip": { "mode": "multi" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 2,
+          "min": 80,
+          "max": 100,
+          "custom": { "lineWidth": 2, "fillOpacity": 15, "drawStyle": "line", "lineInterpolation": "smooth", "spanNulls": true }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "DB Latency SLI" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#FADE2A" } }] },
+          { "matcher": { "id": "byName", "options": "SLO Target (95%)" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#F2495C" } }, { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [8, 4] } }] }
+        ]
+      },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sli:database:latency_ratio_rate5m * 100", "legendFormat": "DB Latency SLI", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "vector(95)", "legendFormat": "SLO Target (95%)", "refId": "B" }
+      ]
+    },
+
+    { "type": "row", "title": "🏭 Disponibilidad por Servicio — Desglose Individual", "id": 5, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 41 }, "collapsed": false },
+
+    {
+      "id": 50, "type": "stat",
+      "title": "users-api Availability",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 42 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent", "decimals": 2, "min": 95, "max": 100,
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 99 }, { "color": "green", "value": 99.9 }] }
+        }
+      },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(http_requests_total{job=\"users-api\", status_code!~\"5..\"}[5m])) / sum(rate(http_requests_total{job=\"users-api\"}[5m])) * 100", "refId": "A" }]
+    },
+
+    {
+      "id": 51, "type": "stat",
+      "title": "products-service Availability",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 5, "x": 4, "y": 42 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent", "decimals": 2, "min": 95, "max": 100,
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 99 }, { "color": "green", "value": 99.9 }] }
+        }
+      },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(http_requests_total{job=\"products-service\", status_code!~\"5..\"}[5m])) / sum(rate(http_requests_total{job=\"products-service\"}[5m])) * 100", "refId": "A" }]
+    },
+
+    {
+      "id": 52, "type": "stat",
+      "title": "cart-service Availability",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 5, "x": 9, "y": 42 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent", "decimals": 2, "min": 95, "max": 100,
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 99 }, { "color": "green", "value": 99.9 }] }
+        }
+      },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(http_requests_total{job=\"cart-service\", status_code!~\"5..\"}[5m])) / sum(rate(http_requests_total{job=\"cart-service\"}[5m])) * 100", "refId": "A" }]
+    },
+
+    {
+      "id": 53, "type": "stat",
+      "title": "orders-service Availability",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 5, "x": 14, "y": 42 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent", "decimals": 2, "min": 95, "max": 100,
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 99 }, { "color": "green", "value": 99.9 }] }
+        }
+      },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(http_requests_total{job=\"orders-service\", status_code!~\"5..\"}[5m])) / sum(rate(http_requests_total{job=\"orders-service\"}[5m])) * 100", "refId": "A" }]
+    },
+
+    {
+      "id": 54, "type": "stat",
+      "title": "payments-service Availability",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 5, "x": 19, "y": 42 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent", "decimals": 2, "min": 95, "max": 100,
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 99 }, { "color": "green", "value": 99.9 }] }
+        }
+      },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(http_requests_total{job=\"payments-service\", status_code!~\"5..\"}[5m])) / sum(rate(http_requests_total{job=\"payments-service\"}[5m])) * 100", "refId": "A" }]
+    },
+
+    {
+      "id": 55, "type": "timeseries",
+      "title": "Availability por Servicio — Histórico",
+      "description": "Cada servicio monitoreado individualmente contra el target de 99.9%",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 46 },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "min", "last"] }, "tooltip": { "mode": "multi" } },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent", "decimals": 2, "min": 98, "max": 100,
+          "custom": { "lineWidth": 2, "fillOpacity": 5, "drawStyle": "line", "lineInterpolation": "smooth", "spanNulls": true }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "SLO Target (99.9%)" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#F2495C" } }, { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [8, 4] } }, { "id": "custom.lineWidth", "value": 2 }] }
+        ]
+      },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (job) (rate(http_requests_total{job=~\"users-api|products-service|cart-service|orders-service|payments-service\", status_code!~\"5..\"}[5m])) / sum by (job) (rate(http_requests_total{job=~\"users-api|products-service|cart-service|orders-service|payments-service\"}[5m])) * 100", "legendFormat": "{{job}}", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "vector(99.9)", "legendFormat": "SLO Target (99.9%)", "refId": "B" }
+      ]
+    },
+
+    { "type": "row", "title": "📋 Definiciones SLO — Referencia del Laboratorio", "id": 6, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 54 }, "collapsed": false },
+
+    {
+      "id": 60, "type": "text",
+      "title": "Guía SLO — Conceptos Clave para el Laboratorio",
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 55 },
+      "options": {
+        "mode": "markdown",
+        "content": "## Glosario SLO — Poleras Store\n\n### ¿Qué es un SLO?\nUn **Service Level Objective** es el porcentaje de tiempo que un servicio debe estar disponible y responder correctamente.\n\n---\n\n### SLOs definidos para Poleras Store\n\n| SLO | Target | Descripción |\n|-----|--------|-------------|\n| **Availability** | 99.9% | El 99.9% de los requests HTTP deben responder sin error 5xx → permite **43.8 min/mes** de downtime |\n| **Latency** | 95% < 500ms | El 95% de los requests deben completarse en menos de 500ms |\n| **Database** | 99.9% | El 99.9% de las queries a PostgreSQL deben ser exitosas |\n\n---\n\n### Conceptos clave\n\n**SLI (Service Level Indicator):** La medición real. Ej: `sli:availability:ratio_rate5m = 0.9998` → 99.98% de requests OK.\n\n**Error Budget:** El margen de error permitido. Si el SLO es 99.9%, el error budget es 0.1% (43.8 min/mes).\n- Budget al 100%: todo bien, equipo puede iterar con confianza\n- Budget al 25%: precaución, revisar cambios recientes\n- Budget al 0%: SLO violado, congelar deploys hasta recuperarse\n\n**Burn Rate:** Velocidad de consumo del error budget relativa a lo esperado.\n- **1x** = consumo normal (30 días para agotar el budget)\n- **6x** = el budget se agota en 5 días\n- **14.4x** = ⚠️ CRÍTICO — el budget mensual se agota en **2 horas**\n\n---\n\n### Workflow de investigación ante un SLO Breach\n```\n1. Ver Burn Rate → ¿qué SLO está en riesgo?\n2. Ver RED Metrics → ¿qué servicio tiene error rate alto o latencia elevada?\n3. Ver Logs → buscar errores recientes en ese servicio\n4. Ver Distributed Tracing → encontrar la traza del request fallido\n```"
+      }
+    }
+  ]
+}

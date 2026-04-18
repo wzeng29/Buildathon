@@ -1,0 +1,41 @@
+---
+import "@/styles/main.css";
+import StoreNavbar from "@/components/store/StoreNavbar";
+
+export interface Props {
+  title?: string;
+  description?: string;
+  lang?: "en" | "es";
+}
+
+const { title = "Poleras Store", description = "Your online t-shirt store", lang = "en" } = Astro.props;
+---
+
+<!doctype html>
+<html lang={lang}>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content={description} />
+    <title>{title} | Poleras Store</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  </head>
+  <body class="min-h-screen bg-gray-50 text-gray-900">
+    <StoreNavbar client:load />
+    <main class="min-h-[calc(100vh-140px)]">
+      <slot />
+    </main>
+    <footer class="bg-gray-900 text-gray-400 py-8 mt-16">
+      <div class="container mx-auto px-4 text-center text-sm">
+        <p>© 2026 Poleras Store — {lang === "en" ? "Distributed Observability Lab" : "Laboratorio de Observabilidad Distribuida"}</p>
+        <p class="mt-1">
+          <a href="http://localhost:3000" target="_blank" class="text-indigo-400 hover:text-indigo-300">Grafana</a>
+          {" · "}
+          <a href="http://localhost:9090" target="_blank" class="text-indigo-400 hover:text-indigo-300">Prometheus</a>
+          {" · "}
+          <a href="http://localhost:3200" target="_blank" class="text-indigo-400 hover:text-indigo-300">Tempo</a>
+        </p>
+      </div>
+    </footer>
+  </body>
+</html>

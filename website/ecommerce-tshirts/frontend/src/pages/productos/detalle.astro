@@ -1,0 +1,13 @@
+---
+import StoreLayout from "@/layouts/StoreLayout.astro";
+import ProductDetail from "@/components/store/ProductDetail";
+---
+
+<StoreLayout title="Product detail" description="View product" lang="en">
+  <div class="container mx-auto px-4 py-8">
+    <div class="mb-4">
+      <a href="/productos" class="text-indigo-600 hover:text-indigo-800 text-sm font-medium">← Back to catalog</a>
+    </div>
+    <ProductDetail client:load />
+  </div>
+</StoreLayout>

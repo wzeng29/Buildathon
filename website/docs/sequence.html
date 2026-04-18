@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Poleras Store - Purchase Flow</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Arial, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      padding: 32px 20px 48px;
+    }
+    .wrap {
+      max-width: 1280px;
+      margin: 0 auto;
+    }
+    h1 {
+      margin: 0 0 6px;
+      font-size: 32px;
+      text-align: center;
+    }
+    .subtitle {
+      margin: 0 0 12px;
+      color: #94a3b8;
+      text-align: center;
+    }
+    .nav {
+      text-align: center;
+      margin-bottom: 28px;
+    }
+    .nav a {
+      color: #cbd5e1;
+      text-decoration: none;
+      border: 1px solid #334155;
+      background: #1e293b;
+      border-radius: 8px;
+      padding: 8px 14px;
+      display: inline-block;
+    }
+    .card {
+      background: #ffffff;
+      border-radius: 16px;
+      padding: 24px;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+      overflow-x: auto;
+    }
+    footer {
+      margin-top: 20px;
+      text-align: center;
+      color: #64748b;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Poleras Store</h1>
+    <p class="subtitle">End-to-end purchase sequence</p>
+    <div class="nav">
+      <a href="architecture.html">Open architecture diagram</a>
+    </div>
+
+    <div class="card">
+      <div class="mermaid">
+sequenceDiagram
+    actor User
+    participant Frontend
+    participant Users as users-api
+    participant Products as products-service
+    participant Cart as cart-service
+    participant Orders as orders-service
+    participant Payments as payments-service
+
+    rect rgb(219, 234, 254)
+      User->>Frontend: Enter email and password
+      Frontend->>Users: POST /api/auth/login
+      Users-->>Frontend: 200 OK + JWT token
+      Frontend-->>User: Session started
+    end
+
+    rect rgb(220, 252, 231)
+      User->>Frontend: Browse products
+      Frontend->>Products: GET /api/products
+      Products-->>Frontend: Product list
+      User->>Frontend: Open product detail
+      Frontend->>Products: GET /api/products/:slug
+      Products-->>Frontend: Variant and stock detail
+    end
+
+    rect rgb(243, 232, 255)
+      User->>Frontend: Add item to cart
+      Frontend->>Cart: POST /api/cart/items + JWT
+      Cart-->>Frontend: 201 Created
+      User->>Frontend: View cart
+      Frontend->>Cart: GET /api/cart + JWT
+      Cart-->>Frontend: Cart summary
+    end
+
+    rect rgb(255, 237, 213)
+      User->>Frontend: Confirm checkout
+      Frontend->>Orders: POST /api/orders + JWT
+      Orders->>Cart: Validate cart
+      Cart-->>Orders: Cart items
+      Orders->>Products: Validate stock
+      Products-->>Orders: Stock available
+      Orders-->>Frontend: 201 Created + order_id
+      Frontend-->>User: Order created
+    end
+
+    rect rgb(204, 251, 241)
+      User->>Frontend: Submit payment method
+      Frontend->>Payments: POST /api/payments/process + JWT
+      Payments->>Orders: Verify order ownership and status
+      Orders-->>Payments: Order is valid
+      alt approved
+        Payments-->>Frontend: 201 approved + transaction_id
+        Frontend-->>User: Payment accepted
+      else rejected
+        Payments-->>Frontend: 201 rejected + reason
+        Frontend-->>User: Payment rejected
+      end
+    end
+
+    rect rgb(241, 245, 249)
+      Note over Frontend,Payments: traceparent and X-Session-ID are propagated across the journey
+      Note over Frontend,Payments: Logs go to Loki, traces go to Tempo, metrics go to Prometheus
+    end
+      </div>
+    </div>
+
+    <footer>Canonical purchase flow for the demo storefront and observability stack.</footer>
+  </div>
+
+  <script>
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: "base",
+      securityLevel: "loose",
+      sequence: {
+        useMaxWidth: true,
+        mirrorActors: false
+      }
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+---
+import StoreLayout from "@/layouts/StoreLayout.astro";
+import AuthPage from "@/components/store/AuthPage";
+---
+
+<StoreLayout title="Mi cuenta" description="Inicia sesión o crea tu cuenta" lang="es">
+  <AuthPage client:load />
+</StoreLayout>

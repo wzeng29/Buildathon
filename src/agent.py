@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from typing import Iterable
@@ -22,6 +23,7 @@ CONNECTOR_HINTS: dict[str, tuple[str, ...]] = {
 }
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ALLOWED_SOURCE_ROOT = (PROJECT_ROOT / "files").resolve()
+LOGGER = logging.getLogger(__name__)
 
 
 class BuildAgents:
@@ -67,6 +69,19 @@ class BuildAgents:
                 reasoning_trace.append(
                     "Resolved follow-up action against the last referenced document in memory"
                 )
+        if action_request is None:
+            action_request = self._infer_action_request_via_llm(question)
+            if action_request is not None:
+                reasoning_trace.append(
+                    "Inferred executable intent via LLM because no explicit command syntax matched"
+                )
+            else:
+                fallback_request = self._infer_action_request_deterministically(question)
+                if fallback_request is not None:
+                    action_request = fallback_request
+                    reasoning_trace.append(
+                        "Inferred executable intent via deterministic fallback after LLM classification returned no action"
+                    )
         if action_request is not None:
             reasoning_trace.append(
                 "Parsed action: "
@@ -146,6 +161,104 @@ class BuildAgents:
             if connector.source_type == target_system and connector.target_type == target_type:
                 return connector
         return None
+
+    def _infer_action_request_via_llm(self, question: str) -> ActionRequest | None:
+        """Use the LLM to classify natural-language executable intents into action requests."""
+        payload = self.responder.call_function(
+            system_prompt=(
+                "You classify whether a user message is asking the assistant to execute an action "
+                "using one of the configured enterprise tools, or is only asking an informational question. "
+                "Prefer `is_action=false` unless the user is clearly asking the system to do something."
+            ),
+            user_prompt=(
+                f"User message:\n{question}\n\n"
+                "Available targets:\n"
+                "- jira ticket\n"
+                "- jira workflow\n"
+                "- confluence page\n"
+                "- k6 test\n"
+                "- k6 report\n"
+                "- k6 workflow\n"
+                "- grafana dashboard\n\n"
+                "Interpret natural requests such as asking to generate a plan, run a workflow, create/update a ticket, "
+                "or fetch a concrete artifact as actions when appropriate."
+            ),
+            function_name="classify_action_request",
+            function_description="Classify whether the user wants an executable action, and if so return the structured action request.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "is_action": {"type": "boolean"},
+                    "operation": {
+                        "type": "string",
+                        "enum": ["create", "read", "update", "delete", "run"],
+                    },
+                    "target_system": {
+                        "type": "string",
+                        "enum": ["jira", "confluence", "k6", "grafana"],
+                    },
+                    "target_type": {
+                        "type": "string",
+                        "enum": ["ticket", "page", "test", "report", "workflow", "dashboard"],
+                    },
+                    "identifier": {"type": "string"},
+                    "fields": {
+                        "type": "object",
+                        "additionalProperties": {"type": "string"},
+                    },
+                },
+                "required": ["is_action", "operation", "target_system", "target_type", "identifier", "fields"],
+                "additionalProperties": False,
+            },
+            temperature=0.0,
+        )
+        LOGGER.info("LLM action classification payload=%s for question=%r", payload, question[:200])
+        if not isinstance(payload, dict) or not payload.get("is_action"):
+            return None
+        operation = str(payload.get("operation") or "").strip().lower()
+        target_system = str(payload.get("target_system") or "").strip().lower()
+        target_type = str(payload.get("target_type") or "").strip().lower()
+        identifier = str(payload.get("identifier") or "").strip() or None
+        fields = payload.get("fields") or {}
+        if not isinstance(fields, dict):
+            fields = {}
+        normalized_fields = {
+            str(key): str(value)
+            for key, value in fields.items()
+            if str(key).strip() and value is not None
+        }
+        if operation not in {"create", "read", "update", "delete", "run"}:
+            return None
+        if target_system not in {"jira", "confluence", "k6", "grafana"}:
+            return None
+        if target_type not in {"ticket", "page", "test", "report", "workflow", "dashboard"}:
+            return None
+        return ActionRequest(
+            operation=operation,
+            target_system=target_system,
+            target_type=target_type,
+            identifier=identifier,
+            fields=normalized_fields,
+        )
+
+    @staticmethod
+    def _infer_action_request_deterministically(question: str) -> ActionRequest | None:
+        """Last-resort intent fallback for natural Jira workflow asks when LLM classification is unavailable."""
+        lowered = (question or "").lower()
+        issue_match = re.search(r"\b([A-Z][A-Z0-9_]+-\d+)\b", question or "", re.IGNORECASE)
+        if not issue_match:
+            return None
+        if not any(token in lowered for token in ("plan", "script", "result", "results", "k6", "performance", "test")):
+            return None
+        if not any(token in lowered for token in ("generate", "create", "build", "run", "get", "execute")):
+            return None
+        return ActionRequest(
+            operation="run",
+            target_system="jira",
+            target_type="workflow",
+            identifier=issue_match.group(1).upper(),
+            fields={},
+        )
 
     def _collect_evidence(
         self,
@@ -259,11 +372,14 @@ class BuildAgents:
 
 def format_slack_response(result: AgentAnswer) -> str:
     """Render the final answer as a Slack-friendly message with citations."""
+    visible_citations = _visible_citations(result.citations)
     citations = [
         f"{index}. [{citation.source_type}] {citation.title} - {citation.url}"
-        for index, citation in enumerate(_visible_citations(result.citations), start=1)
+        for index, citation in enumerate(visible_citations, start=1)
     ]
-    citation_block = "\n".join(citations) if citations else "No supporting sources found."
+    if not citations:
+        return result.answer
+    citation_block = "\n".join(citations)
     return f"{result.answer}\n\nSources:\n{citation_block}"
 
 

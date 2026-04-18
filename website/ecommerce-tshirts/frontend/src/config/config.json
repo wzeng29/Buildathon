@@ -1,0 +1,58 @@
+{
+  "site": {
+    "title": "Poleras Store",
+    "base_url": "http://localhost:4000",
+    "base_path": "/",
+    "trailing_slash": false,
+    "favicon": "/images/favicon.png",
+    "logo": "/images/logo-custom.svg",
+    "logo_darkmode": "/images/logo-darkmode-custom.svg",
+    "logo_width": "250",
+    "logo_height": "40",
+    "logo_text": "Poleras Store"
+  },
+
+  "settings": {
+    "search": true,
+    "sticky_header": true,
+    "theme_switcher": true,
+    "default_theme": "system",
+    "pagination": 2,
+    "summary_length": 200,
+    "blog_folder": "blog"
+  },
+
+  "announcement": {
+    "enable": false,
+    "content": "<span class='text-center block'>♥️ Loving Astroplate? <a class='underline' href='https://github.com/zeon-studio/astroplate' target='_blank' rel='noopener'>Please ⭐️ on Github</a></span>",
+    "expire_days": 7
+  },
+
+  "params": {
+    "contact_form_action": "#",
+    "copyright": "Proyecto educativo de [Performance360latam.com](https://performance360latam.com)"
+  },
+
+  "navigation_button": {
+    "enable": false,
+    "label": "",
+    "link": "/"
+  },
+
+  "google_tag_manager": {
+    "enable": false,
+    "gtm_id": "GTM-XXXXXX"
+  },
+
+  "disqus": {
+    "enable": true,
+    "shortname": "themefisher-template",
+    "settings": {}
+  },
+
+  "metadata": {
+    "meta_author": "Performance360latam",
+    "meta_image": "/images/og-image.png",
+    "meta_description": "Poleras Store — plataforma e-commerce de aprendizaje para performance testing y observabilidad"
+  }
+}
