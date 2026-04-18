@@ -1,0 +1,81 @@
+flowchart TD
+    User[Slack or CLI user]
+    Slack[src/slack_app.py]
+    Main[src/main.py]
+    Build[BuildAgents<br/>src/agent.py]
+    Memory[src/memory.py]
+    Understand[RequirementUnderstandingAgent<br/>src/multi_agent.py]
+    Retrieve[RetrievalAgent<br/>src/multi_agent.py]
+    Synthesize[AnswerSynthesisAgent<br/>src/multi_agent.py]
+    Connectors[src/connectors.py]
+    Jira[Jira connector]
+    JiraPerf[Jira performance workflow connector]
+    Confluence[Confluence connector]
+    Manuals[AS400 and Synon manual connector]
+    K6Test[K6 test connector]
+    K6Report[K6 report connector]
+    K6Workflow[K6 workflow connector]
+    PerfTools[K6Workspace<br/>src/perf_tools.py]
+    MCP[MCP adapter<br/>src/mcp_adapter.py]
+    Grafana[Grafana connector]
+    Semantic[src/semantic_retrieval.py]
+    Files[files/*.pdf and *.csv]
+    LLM[src/llm.py]
+    Skills[Project skills<br/>docs/skills/]
+    StrategySkill[performance-testing-strategy]
+    K6Skill[k6-best-practices]
+    AnalysisSkill[performance-report-analysis]
+    StrategyRefs[references/*.md]
+    K6Refs[references/*.md]
+    AnalysisRefs[references/*.md]
+    StrategyEvals[evals/evals.json]
+    K6Evals[evals/evals.json]
+    AnalysisEvals[evals/evals.json]
+    PerfRepo[performance/tests + results]
+
+    User --> Slack
+    User --> Main
+    Slack --> Build
+    Main --> Build
+    Build --> Memory
+    Build --> Understand
+    Understand --> Retrieve
+    Retrieve --> Connectors
+    Connectors --> Jira
+    Connectors --> JiraPerf
+    Connectors --> Confluence
+    Connectors --> Manuals
+    Connectors --> K6Test
+    Connectors --> K6Report
+    Connectors --> K6Workflow
+    Connectors --> Grafana
+    Connectors --> MCP
+
+    JiraPerf --> Jira
+    JiraPerf --> PerfTools
+    JiraPerf --> Grafana
+    JiraPerf --> Skills
+    JiraPerf --> LLM
+
+    Skills --> StrategySkill
+    Skills --> K6Skill
+    Skills --> AnalysisSkill
+    StrategySkill --> StrategyRefs
+    StrategySkill --> StrategyEvals
+    K6Skill --> K6Refs
+    K6Skill --> K6Evals
+    AnalysisSkill --> AnalysisRefs
+    AnalysisSkill --> AnalysisEvals
+
+    PerfTools --> PerfRepo
+    K6Test --> PerfTools
+    K6Report --> PerfTools
+    K6Workflow --> PerfTools
+
+    Manuals --> Semantic
+    Manuals --> Files
+    Build --> Synthesize
+    Synthesize --> LLM
+    Build --> Memory
+    Build --> Slack
+    Build --> Main

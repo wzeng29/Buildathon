@@ -1,0 +1,12 @@
+[
+  { "slug": "polera-basica-blanca",   "product_id": "prod-001", "variant_id": "var-001-m",  "name": "Polera Básica Blanca",   "price": 9990  },
+  { "slug": "polera-basica-negra",    "product_id": "prod-002", "variant_id": "var-002-m",  "name": "Polera Básica Negra",    "price": 9990  },
+  { "slug": "polera-estampada-logo",  "product_id": "prod-003", "variant_id": "var-003-l",  "name": "Polera Estampada Logo",  "price": 14990 },
+  { "slug": "polera-premium-algodon", "product_id": "prod-004", "variant_id": "var-004-m",  "name": "Polera Premium Algodón", "price": 19990 },
+  { "slug": "polera-oversize-gris",   "product_id": "prod-005", "variant_id": "var-005-xl", "name": "Polera Oversize Gris",   "price": 16990 },
+  { "slug": "polera-manga-larga-azul","product_id": "prod-006", "variant_id": "var-006-m",  "name": "Polera Manga Larga Azul","price": 12990 },
+  { "slug": "polera-rayas-marinera",  "product_id": "prod-007", "variant_id": "var-007-s",  "name": "Polera Rayas Marinera",  "price": 11990 },
+  { "slug": "polera-cuello-v-blanca", "product_id": "prod-008", "variant_id": "var-008-m",  "name": "Polera Cuello V Blanca", "price": 9990  },
+  { "slug": "polera-dry-fit-verde",   "product_id": "prod-009", "variant_id": "var-009-l",  "name": "Polera Dry Fit Verde",   "price": 13990 },
+  { "slug": "polera-vintage-retro",   "product_id": "prod-010", "variant_id": "var-010-m",  "name": "Polera Vintage Retro",   "price": 17990 }
+]

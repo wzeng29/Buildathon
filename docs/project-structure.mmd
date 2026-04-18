@@ -1,0 +1,69 @@
+flowchart TD
+    Root[Buildathon]
+    Config[config.py]
+    Src[src/]
+    Tests[tests/]
+    Files[files/]
+    Perf[performance/]
+    Docs[docs/]
+    SkillDocs[docs/skills/]
+
+    Root --> Config
+    Root --> Src
+    Root --> Tests
+    Root --> Files
+    Root --> Perf
+    Root --> Docs
+    Docs --> SkillDocs
+
+    Src --> Agent[agent.py]
+    Src --> Connectors[connectors.py]
+    Src --> CommandParser[command_parser.py]
+    Src --> LLM[llm.py]
+    Src --> MCPAdapter[mcp_adapter.py]
+    Src --> PerfTools[perf_tools.py]
+    Src --> ProjectSkills[project_skills.py]
+    Src --> Skills[skills.py]
+    Src --> Slack[slack_app.py]
+    Src --> Memory[memory.py]
+    Src --> Retrieval[semantic_retrieval.py]
+
+    Perf --> PerfData[data/]
+    Perf --> PerfLib[lib/]
+    Perf --> PerfResults[results/]
+    Perf --> PerfTests[tests/]
+    Perf --> Mock[mock_auth_server.py]
+    Perf --> RunPs1[run-auth-local.ps1]
+    Perf --> StartPs1[start-auth-local.ps1]
+
+    PerfData --> Users[users.json]
+    PerfData --> Products[products.json]
+    PerfData --> Cards[cards.json]
+
+    PerfTests --> Auth[auth/]
+    PerfTests --> Cart[cart/]
+    PerfTests --> ProductsTests[products/]
+    PerfTests --> Orders[orders/]
+    PerfTests --> Payments[payments/]
+    PerfTests --> E2E[e2e/]
+    Payments --> TicketScripts[payment ticket scripts<br/>e.g. payments.kan-5.test.js]
+
+    SkillDocs --> K6Skill[k6-best-practices/]
+    SkillDocs --> ReportSkill[performance-report-analysis/]
+    SkillDocs --> StrategySkill[performance-testing-strategy/]
+
+    K6Skill --> K6SkillReadme[README.md]
+    K6Skill --> K6SkillMain[SKILL.md]
+    K6Skill --> K6Refs[references/]
+    K6Skill --> K6Evals[evals/]
+
+    ReportSkill --> ReportReadme[README.md]
+    ReportSkill --> ReportMain[SKILL.md]
+    ReportSkill --> ReportRefs[references/]
+    ReportSkill --> ReportEvals[evals/]
+
+    StrategySkill --> StrategyReadme[README.md]
+    StrategySkill --> StrategyMain[SKILL.md]
+    StrategySkill --> StrategyRefs[references/]
+    StrategySkill --> StrategyEvals[evals/]
+

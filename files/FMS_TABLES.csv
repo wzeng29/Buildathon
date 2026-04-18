@@ -1,0 +1,819 @@
+﻿TABLE_NAME,TABLE_TEXT
+OSANCPP,Vendor WS Trans Physical file
+UAAHCPP,PR YR END HOOPP RPT Physical file
+UAAICPP,Sub Payments WS Errors Physical file
+UAAJCPP,Employee PR Code Prelim Physical file
+UAAKCPP,ED Warning File Physical file
+UAAMREP,To Be Cancelled Physical file
+UAAOREP,Company Owner Hierarchy Physical file
+UAAPCPP,Company WS Trans Physical file
+UAAQCPP,Direct Deposit WS Trans Physical file
+UAARCPP,Company WS Bank Trans Physical file
+UAASCPP,Company WS Owner Hrchy Physical file
+UAATCPP,WS API Log Physical file
+UAAUREP,WS API Config Physical file
+UAAVCPP,Company WS Adtl Comments Physical file
+UAAYREP,Vendor Migration Physical file
+UCABCPP,PR WCB Monthly Summary Physical file
+UCACCPP,Files To Update Physical file
+UCADCPP,Values To Update Physical file
+UCAECPP,Employee Per Pay Per Adj Physical file
+UCAFCPP,Payroll Codes Policy Physical file
+UCAGCPP,Vendor WS Patch Physical file
+UCAHREP,Accounting Treatment Physical file
+UCAICPP,CIBC CI Physical file
+UCAJREP,CIBC CI WRK Physical file
+UCAKCPP,French Conversion Physical file
+UCALREP,Payroll Code WCB Usage Physical file
+UCAMCPP,Employee Master WS Warn Physical file
+UCANCPP,1T SubPayG3 Physical file
+UCAOCPP,Payroll Code Prov/State Physical file
+UCAPCPP,1T G3 Trade Cheque Physical file
+UEAACPP,Payroll Cheques Import Physical file
+UEABCPP,WD Employee WS Trans Physical file
+UEACCPP,WD Employee Master Physical file
+UEAECPP,Time Sheets WD WS Trans Physical file
+UEAGREP,Messages Physical file
+UEAICPP,WD Voucher Lines Physical file
+UEAJCPP,WD Payroll Result Trans Physical file
+UEAKCPP,WD Payroll Result TrLine Physical file
+UEARCPP,WD Payr Result Reversal Physical file
+UEA1CPP,PR Direct Deposit DELETED Physical file
+UEBECPP,Cost Reports Physical file
+UEBFCPP,Time Sheets WD Batch Code Physical file
+UFAACPP,G3 Payroll Cheque Update Physical file
+UFABCPP,GenConf Log Physical file
+UFACREP,Statement of Contracts Physical file
+UFADREP,Cheque Signatures Physical file
+UFAHREP,Benefit Compare Exclude Physical file
+UFAYREP,Project Ws Compl Dates Physical file
+UFAZREP,WD Cost Trans Status Physical file
+UFA0REP,WD Cost Dtl Vchr Upd Sts Physical file
+UFA4REP,Future Flag Physical file
+UFA5REP,Company Bank Extension Physical file
+UFA6REP,Cash Flow Configuration Physical file
+UGACCPP,Employee Selection Physical file
+UGAEREP,Bank System International Physical file
+UGAGREP,Bank System Account Physical file
+UOAACPP,WS Performance Log Physical file
+UOABCPP,Billings Prime WS Tr Layt Physical file
+UOACCPP,Billings Prime WS Tr PayA Physical file
+UOADREP,AP Invoice Tr Scan Usr Physical file
+UOAECPP,Material Detail Chrg Vchr Physical file
+UOAFREP,Notifications Config File Physical file
+UOAGCPP,PR Sales Tax Calc Physical file
+UOAHCPP,Notifications Log File Physical file
+UOAKREP,SD Employee Dividends Dtl Physical file
+UOAQCPP,User_Cnf G3 Physical file
+UOA4REP,AP Sub Acrl Formula Type Physical file
+UOA5CPP,Vendor Last Paid Physical file
+UOA7CPP,Report Email Config File Physical file
+UOA8CPP,WS Warnings Physical file
+UOA9CPP,Time Sheets WS Trans Ref Physical file
+UPABREP,GenConf Table Physical file
+UPACREP,GenConf Table Cfg Physical file
+UPAFCPP,Sub-Contract WS Ref Physical file
+UPAGREP,Bank Account Originator Physical file
+URAACPP,Billings Prime WS Trans Physical file
+URABREP,Time Sheets WS Lst Batch Physical file
+URACCPP,Currency Conv WS Trans Physical file
+URADCPP,AP Sub Invoice Req Physical file
+URAECPP,Sub-Contract Req CPOC Physical file
+URAFREP,Changes G3 to FMS Physical file
+URAGCPP,Change Order Bilg Dist Physical file
+URAICPP,Billings Prime To FMS Physical file
+URAJCPP,Changes G3 to FMS Dtl Physical file
+URAKCPP,Changes G3 To FMS Bilg Physical file
+URALCPP,AP Sub Invoice Req To SC Physical file
+URAMCPP,AP Invoice SC Req Physical file
+URANCPP,AR Invoice PDF Physical file
+URAOREP,SD Employee Share Categry Physical file
+URAPREP,SD Share Category Physical file
+URASCPP,Cost Acc Chg Audit Trail Physical file
+URATCPP,Employee Salary Change Physical file
+URAUCPP,Time Sheets WS to FMS Physical file
+URAVREP,SD Employee Shares Doc Physical file
+URAWCPP,Sub-Payments WS Tr Physical file
+URAXCPP,Sub-Payments WS Tr-Attchm Physical file
+URAYCPP,Sub Payments WS Tr-PR Physical file
+URAZCPP,Sub-Payments WS Tr-PR Ret Physical file
+URA0CPP,Sub-Payments WS Tr-PR Tax Physical file
+URA1CPP,Sub Payments WS Tr-PR LI Physical file
+URA2CPP,Sub-Payments WS Tr-PR LIR Physical file
+URA4CPP,Sub-Payments To FMS PR Physical file
+URA5CPP,AP Sub Pay App Physical file
+URA6CPP,AP Sub Pay App SC CC Physical file
+URA7CPP,AP Sub Pay App Line Physical file
+URA8CPP,Sub-Payments WS Tr-P Physical file
+URA9CPP,Sub Payments WS Tr-P LI Physical file
+URBACPP,Sub-Payments to FMS PR LI Physical file
+URBCCPP,Sub-Payments To FMS Physical file
+URBDCPP,Material Cost WS Trans Dt Physical file
+USAAREP,Vendor Type Config Physical file
+USABREP,Vendor Type Physical file
+USAECPP,Vendor Contact Physical file
+USAKCPP,InvoicesIn WS Trans Det Physical file
+USALCPP,AP Purch Card BofNS Rec Physical file
+USAMCPP,Vendor/Last AP Invoice Physical file
+USANREP,Billings Sub To FMS Physical file
+USAOREP,AP Purchase Card Account Physical file
+USAPCPP,Prov/State Repair Physical file
+USAQCPP,AP Sub Acrl 6 Physical file
+USARCPP,Vendor Contact Type Physical file
+USARREP,Ap Purchase Card Cardhldr Physical file
+USASREP,Vendor Contact Type Cfg Physical file
+USATCPP,Vendor Contact WS Trans Physical file
+USAUCPP,Budget Transfer WS Trans Physical file
+USAVCPP,Project EB Int Chrg Work Physical file
+USAXREP,PR BIM Charge Physical file
+USAYCPP,Employee Project Profile Physical file
+USAZCPP,Billings Sub To FMS Line Physical file
+USA0CPP,PR Direct Deposit Physical file
+USA1CPP,PR Direct Deposit Chq Physical file
+USA2REP,Material Cost WS Ref Physical file
+USA3CPP,CIMPL Integration Exp Physical file
+USA4REP,CIMPL GL Account Selec Physical file
+USA6CPP,AP Sub Acrl Ownr Bilg Physical file
+USA7REP,Material Code/Sectn Ext Physical file
+USA9CPP,AP Sub Acrl Dtls SC Physical file
+USBACPP,AR G3 Prime Sub Line Link Physical file
+USBBREP,ITC Category Physical file
+USBCREP,Prov ITC Category Physical file
+USBDREP,Country ITC Category Physical file
+USBEREP,AP Purch Card Merch Cat Physical file
+USBFREP,Prov Sales Tax Rate Physical file
+USBGREP,Country Tax Rate Physical file
+USBHCPP,AR G3 Prime Sub Link Lock Physical file
+USBICPP,Material Detail Ext Physical file
+USBJCPP,Material Detail TR Ext Physical file
+USBKCPP,AP Invoice Ext Physical file
+USBLCPP,AP Invoice TR Ext Physical file
+USBNREP,ED Application Definition Physical file
+USBOREP,ED Application Control Physical file
+USBPCPP,AP Sub Acrl Dtls SC Per Physical file
+USBQREP,Vendor Hold by Project Physical file
+USBRCPP,Project Contact Physical file
+USBSCPP,Project Vendor Physical file
+USBTREP,ContractReq WS Ref Physical file
+USBUCPP,AP Sub Acrl SC CC Physical file
+USBUREP,Labour Code Minor Sectn Physical file
+USBWREP,Cost Type Physical file
+USBXCPP,AR Billing To Cost Physical file
+USBYREP,Cost Code New Str Input Physical file
+USBZCPP,Project WS Trans Physical file
+USB0CPP,WRK Employer Contr Amts Physical file
+USB1REP,PIMA1N9 Tax Account Number Physical file
+USB2CPP,WRK Contr Download Amts Physical file
+USB3REP,Project Ws Reference Physical file
+USB4REP,Owner to Vendor Physical file
+USB5REP,Architect to Vendor Physical file
+USB7REP,SD Shares Acc Reference Physical file
+USB8CPP,WRK CSV Temp File Physical file
+USCACPP,Sub-Contract Req to SC Physical file
+USCBCPP,Material Cost WS Trans Physical file
+USCCREP,Dividend Cheques Ext Physical file
+USCDCPP,AP Sub Acrl SC CC Prv Physical file
+UTAAREP,EB Sales Rep Physical file
+UTABREP,EB Project Manager Physical file
+UTACREP,EB Contract Physical file
+UTAFCPP,EB Commissions Physical file
+UTAGCPP,Sub-Contract CPOC EdgeB Physical file
+UTAHCPP,Currency Code Comment Physical file
+UTAICPP,Currency Conv Comment Physical file
+UTAJCPP,Employee Master WS Trans Physical file
+UTAKCPP,Allegro WS Trans Physical file
+UTALCPP,Change Order EdgeB Physical file
+UTAMCPP,Change Order EdgeB Detl Physical file
+UTANREP,PR Emp Loan Interest Rate Physical file
+UTAQCPP,PR Emp Loan Interest Physical file
+UTARCPP,Time Sheets Detail Dwnld Physical file
+UTASCPP,employee vacation Physical file
+UTATCPP,Sub-Contract C-CPOC EdgeB Physical file
+UTAUCPP,Ap Purchase Card Physical file
+UTAVREP,SIC Group Physical file
+UTAWREP,SIC Subgroup Physical file
+UTAXCPP,AP Invoice Duplicate Physical file
+UTAYREP,WJ TS Blocked Reason Physical file
+UTAZCPP,Email Sent History File Physical file
+UTA0CPP,AP Invoice Fiscal Ref Physical file
+UTA1CPP,Sub-Contract CPOC Akn EB Physical file
+UTA2CPP,Change Order EdgeB Dt SC Physical file
+UTA3REP,Project EB Download Physical file
+UTA4CPP,Employee Vacation Run Cal Physical file
+UTA5CPP,PR Accrued Gratuity Physical file
+UTA6CPP,AP Sub Acrl 5 Report Physical file
+UTA7CPP,AR Billing Spec EB Physical file
+UTA8REP,Dividend Cheques Init XLS Physical file
+UTA9REP,AR Invoice GST Rate Ovrd Physical file
+UTBACPP,Dividend Cheques Physical file
+UTBBCPP,Sub-Contract Req Fin Info Physical file
+UTBCCPP,Dividend Cheques Dtl Physical file
+UTBDREP,Email Alternate Address Physical file
+UTBECPP,Investment Download Physical file
+UTBGREP,SD Tranche Offers Physical file
+UTBHREP,SD Dividends Physical file
+UTBICPP,SD Employee Shares Upload Physical file
+UTBJCPP,SD Employee Shares Physical file
+UTBKCPP,SD Employee Dividends Physical file
+UTBLCPP,Time Sheets WS Trans Physical file
+UTBMCPP,SD Shareholders Comments Physical file
+UTBNREP,SD Table Physical file
+UTBOREP,SD Table Contents Physical file
+UTBPCPP,SD History and Audit Data Physical file
+UTBQREP,SD Share Class Physical file
+UTBRCPP,SD Emp Loan Transactions Physical file
+UTBSCPP,SD Employee Share Summary Physical file
+UTBTCPP,WRK Employee Share Summ Physical file
+UTBUCPP,SD Error Report Physical file
+UTBVCPP,Voucher Copy From Physical file
+UTBWREP,Payroll Ben BC Md Empr Physical file
+UTBXREP,PR CRA ROE Physical file
+UTBYCPP,Position Profile WS Trans Physical file
+UTBZREP,Sub-Contract Component Physical file
+UTB0CPP,Voucher Ignore Sub-Area Physical file
+UTB1REP,WJ Pricing Physical file
+UTB2REP,WJ Pricing Variance Physical file
+UTB3REP,WJ Pricing Date To Use Physical file
+UTB4REP,WJ Pricing O/R Reason Physical file
+UTB5REP,Sub-Contract Comp Ext Physical file
+UTB6REP,PR ROE Export Physical file
+UTB7REP,WJ Pricing by Inventory Physical file
+UTB8REP,WJ Pricing Weeks Physical file
+UTB9REP,WJ Pricing Week Group Physical file
+UTCBCPP,Sub-Contract Comp Exch Physical file
+UTCCCPP,AP Invoice TR GST Error Physical file
+UTCDCPP,Time Sheets Ext Physical file
+UTCECPP,Project Archive Excel Physical file
+UTCFCPP,SD Employee Shares Uld Physical file
+UTCGREP,SD Share Value Physical file
+UTCHREP,WJ Tri-Annual Year Physical file
+UTCICPP,SD Report CSV Temp Physical file
+UTCJCPP,Union Benefits Export Physical file
+UTCKCPP,Union Benefits Export CSV Physical file
+UTCLCPP,SD Employee Sha Summ Trn Physical file
+UTCMREP,Employee Pay History Physical file
+UTCNCPP,PR Roe Export 1 Empl Physical file
+UTCOCPP,PR ROE Export Salary Physical file
+UTCPCPP,Ap Invoice Tr Comment Physical file
+UTCQCPP,SD Direct Deposit Rcd A Physical file
+UTCRCPP,SD Direct Deposit Rcd C Physical file
+UTCSCPP,SD Direct Deposit Rcd Z Physical file
+UTCTCPP,Changes WS Transaction Physical file
+UTCUCPP,Billings Sub WS Trans Physical file
+UTCVCPP,ContractReq WS Trans Physical file
+UTCWCPP,InvoicesIn WS Trans Physical file
+UTCXCPP,Material Detail YE Physical file
+UTCZCPP,Time Sheets WS Batch Cde Physical file
+UTC0CPP,PR Cheques WS Trans Physical file
+UTC1CPP,Billings Prime WS Tax Physical file
+UTC2CPP,Billings Prime WS Rtng L Physical file
+UTC3CPP,Billings Prime WS Cntct Physical file
+UTC4CPP,Billings Prime WS Rtng Physical file
+UTC5REP,Billings Prime To FMS Ln Physical file
+UTC6CPP,Employee Master WS Physical file
+UTC7CPP,Employee Export G3 Physical file
+UTC8CPP,Employee Export Cust G3 Physical file
+UTC9REP,Project WS Config Physical file
+UTDACPP,Payroll Cheque Run Physical file
+UTDBREP,Payroll Cheque Print Loc Physical file
+UTDCCPP,G3 Custom Fields Exp Physical file
+UTDDCPP,G3 Trade Chaque Update Physical file
+UTDEREP,InvoicesIn To G3 Ref Physical file
+UTDFCPP,PR Job Code Exception Physical file
+UTDGCPP,G3 Sub Payment Update Physical file
+UTDHCPP,G3 Sub Payment WS Physical file
+UTDIREP,PR WCB Rate Type Physical file
+UTDJCPP,G3 Prime Paymnt WS Trans Physical file
+UTDKCPP,G3 Prime Payment Update Physical file
+UTDMCPP,Project WS Trans Det Physical file
+UTDNCPP,InvoicesIn WS Trans Com Physical file
+UUAAREP,Vendor Physical file
+UUABREP,Payment Terms Physical file
+UUACREP,Region Physical file
+UUADREP,AP Vendor Physical file
+UUAECPP,AP Invoice Sort File Retrieval index
+UUAFREP,Sub-Contract Physical file
+UUAGREP,AR Billing Spec Physical file
+UUAHREP,Company Physical file
+UUAIREP,Area Physical file
+UUAJREP,Owner/Customer Physical file
+UUAKREP,Labour Cost Physical file
+UUALREP,Material Cost Physical file
+UUAMREP,Change Order Physical file
+UUANCPP,Labour Detail Physical file
+UUAOCPP,Material Detail Physical file
+UUAPREP,Bank Account Physical file
+UUAQREP,Employee Master Physical file
+UUARCPP,AR Invoice Physical file
+UUASCPP,AR Cash Receipts Physical file
+UUATCPP,AP Cheques Physical file
+UUAUCPP,AP Invoice Physical file
+UUAVREP,Project Physical file
+UUAWREP,Material Code/Sectn Physical file
+UUAXCPP,Time Sheets Physical file
+UUAYCPP,Voucher Header Physical file
+UUAZCPP,Payroll Codes Master Physical file
+UUA0CPP,Warehouse Inventory Physical file
+UUA1REP,Employee Payroll Codes Physical file
+UUA2REP,Chart of Accounts Physical file
+UUA3REP,General Ledger Master Physical file
+UUA4REP,Employee Job Code Physical file
+UUA5REP,Union Code Physical file
+UUA6CPP,GL Fisc Per Bal Physical file
+UUA7CPP,GL Transactions Physical file
+UUA8REP,Province/State Code Physical file
+UUA9REP,Currency Code Physical file
+UUBAREP,Architect Physical file
+UUBBCPP,Budget Physical file
+UUBCCPP,Budget Change Order Physical file
+UUBDREP,Project Bank Acct Extrnl Physical file
+UUBECPP,Payroll Adjustments Physical file
+UUBFREP,Class/Division Physical file
+UUBGREP,Employee Company Physical file
+UUBHCPP,Weekly Earnings Physical file
+UUBICPP,Change Order Details Physical file
+UUBJREP,Sub-Contractor Group SIC Physical file
+UUBKREP,Project Currency Cnvrsn Physical file
+UUBLREP,Payroll Calendar Physical file
+UUBMREP,Fiscal Calendar Physical file
+UUBNREP,Contract History WELBRO Physical file
+UUBOREP,Statement master Physical file
+UUBPCPP,Sub-Contract Notes In Physical file
+UUBQREP,Labour Code/Sectn Physical file
+UUBRREP,Country Physical file
+UUBSCPP,Sub-Area Physical file
+UUBTCPP,CM Status Report Physical file
+UUBUREP,Sub-Contract Bank Account Physical file
+UUBWREP,Change Order Notes Physical file
+UUBXCPP,Budget Period Balances Physical file
+UUBYREP,Termination Code Physical file
+UUBZCPP,Project Spreadsheet DwnLd Physical file
+UUB0REP,Vendor Name Search Physical file
+UUB1CPP,Batch Header Physical file
+UUB2REP,Contract Type Physical file
+UUB3CPP,AP Invoice SC Physical file
+UUB4REP,Payroll Group Physical file
+UUB5CPP,Cash Flow Physical file
+UUB6CPP,AP Purchase Card Tran Physical file
+UUB7CPP,Time Sheets Detail Physical file
+UUB8CPP,Time Sheets Header Physical file
+UUB9CPP,Payroll Cheques Physical file
+UUCAREP,P&L Control Physical file
+UUCBREP,PIM4151 Ctrl Othr Incm Physical file
+UUCCREP,AP Purchase Card Tran Usd Physical file
+UUCDREP,P&L Group Physical file
+UUCEREP,P&L Sub-Group Physical file
+UUCFREP,Vendor Notes Out Physical file
+UUCGREP,AP Standard Product Physical file
+UUCHREP,Employee Project Auth Physical file
+UUCIREP,Employee Job Class Physical file
+UUCJREP,Employee Master HRM Physical file
+UUCKREP,WJ Salesperson Physical file
+UUCLREP,WJ Commission Code Physical file
+UUCMREP,WJ Commission Table Physical file
+UUCNREP,Project EB Physical file
+UUCOREP,PIM4151 Stmt format Physical file
+UUCPREP,Statement Master PIM4151 Physical file
+UUCQREP,Payroll Codes Structure Physical file
+UUCRREP,Labour Cost EB Physical file
+UUCSREP,Employee Dependant Physical file
+UUCTCPP,Cash Flow Period Balance Physical file
+UUCUREP,Project Category Physical file
+UUCVREP,Subcontractor Physical file
+UUCWREP,Vacation Pay Type Physical file
+UUCXCPP,Sub-Contract CPOC Physical file
+UUCYCPP,Cost Face Sheet Physical file
+UUCZREP,Bank Physical file
+UUC0REP,Payroll Group Auth Physical file
+UUC1CPP,Cash Requirements Physical file
+UUC2REP,Account Type Physical file
+UUC3REP,GL User Authority Physical file
+UUC4CPP,Employee PR Code History Physical file
+UUC6CPP,Time Sheets Payroll Codes Physical file
+UUC7CPP,AR Payments Physical file
+UUC8REP,System Control Physical file
+UUC9REP,Chart of Accounts Struct Physical file
+UUDACPP,Cheque Recn Batch Physical file
+UUDBCPP,Cheque Recn Dtls Physical file
+UUDCREP,Daily Deposit Physical file
+UUDDREP,Warehouse Category Physical file
+UUDEREP,Utilities Physical file
+UUDFREP,Tax Table File Physical file
+UUDGREP,Material Cost EB Physical file
+UUDHREP,AP Purchase Card Vendor Physical file
+UUDIREP,PR TD1 Form Physical file
+UUDJCPP,Time Sheets UI Weeks Physical file
+UUDKREP,P&L Data Sub-Area Physical file
+UUDLREP,Company Extension Physical file
+UUDMCPP,Payroll GL Trans Physical file
+UUDOCPP,PR Direct Deposit Rcd A Physical file
+UUDPCPP,PR Direct Deposit Rcd C Physical file
+UUDQCPP,PR Direct Deposit Rcd Z Physical file
+UUDRREP,Sub-Contract Extension Physical file
+UUDSREP,Project GST File Physical file
+UUDTREP,Project Spreadsheet Physical file
+UUDUCPP,AR Invoice GST File Physical file
+UUDVREP,Area Address Physical file
+UUDWREP,Payment Terms Discount Physical file
+UUDXCPP,Contract History Physical file
+UUDYREP,PIM4150 Forecast Physical file
+UUDZCPP,PIM4151 OH Report Physical file
+UUD0CPP,Batch/Voucher Physical file
+UUD1REP,SIC Master Physical file
+UUD2REP,SIC Book Master Physical file
+UUD3CPP,AP Cheques/Vouched Physical file
+UUD4CPP,Change Order Allocation Physical file
+UUD5CPP,SIC Worksheet Physical file
+UUD6CPP,PIM4151 Long Cnsl Report Physical file
+UUD7CPP,PIM4151 Long Cnsl Othr Inc Physical file
+UUD8CPP,XR Cash Gen. Rpt Extract Physical file
+UUD9CPP,GL Fisc Per Bal Std Desc Physical file
+UUEACPP,Report Cash Generated Physical file
+UUEBREP,AP Std Product Cnvrsn Physical file
+UUECCPP,SIC Worksheet Temp Physical file
+UUEDCPP,Employee PR Codes By Grp Physical file
+UUEEREP,UPM User Profile / Menu Physical file
+UUEFREP,Balance Sheet Year End Physical file
+UUEGREP,PR TD1 Form Type Physical file
+UUEHCPP,BNS Elctrnc Stmnt Dwnld Physical file
+UUEICPP,MN Combined Menus File Physical file
+UUEJCPP,Cashed Cheques NBD Dwnld Physical file
+UUEKREP,PIM4151 Ctrl Incm Physical file
+UUELCPP,T4 Transmitter Record Physical file
+UUEMCPP,T4 Summary Record Physical file
+UUENCPP,T4 Slip Record Physical file
+UUEOREP,SIC Worksheet Project Physical file
+UUEPCPP,UGL Update GL Fiscal Wrkf Physical file
+UUEQCPP,Change Order Dtl Sort Fil Physical file
+UUERCPP,Material Detail Sort File Physical file
+UUESCPP,Employee Master Inactive Physical file
+UUETCPP,Employee Master HRM Inact Physical file
+UUEUREP,PIM4151 Ctrl Incm Acct Physical file
+UUEVCPP,AP Invoice GST Physical file
+UUEWCPP,SCD Sub-Contract Deletion Physical file
+UUEXCPP,Payroll Trans Physical file
+UUEYCPP,BAR Billing/AR Deletion Physical file
+UUEZCPP,AR Invoice Transactions Physical file
+UUE0CPP,AP Invoices Extension Physical file
+UUE1CPP,Material Detail Audit Physical file
+UUE2CPP,Labour Detail Audit Physical file
+UUE3CPP,EPCA Emp Pay Code Audit Physical file
+UUE4CPP,Work GL Transactions Physical file
+UUE5CPP,Monthly Calendar Physical file
+UUE6CPP,MDW Mat Dtl Cash Gen Wrkf Physical file
+UUE7CPP,APW AP Inv Cash Gen Wrkf Physical file
+UUE8CPP,Cash Gen - Future Wrkf Physical file
+UUE9REP,P&L Ctrl Othr Incm Line Physical file
+UUFAREP,P&L Ctrl Incm Line Physical file
+UUFBCPP,PIM4151 Long Cnsl Inc Physical file
+UUFCREP,Cost Plus Projects Physical file
+UUFDREP,PIM4150 Ctrl Incm Acct Frcst Physical file
+UUFEREP,PIM4150 Ctrl Othr Incm Frcst Physical file
+UUFFREP,PIM4151 Ctrl Othr Incm Acct Physical file
+UUFGREP,PIM4150 Ctrl Othr Incm Old Physical file
+UUFHREP,P&L Ctrl Incm Line Long Physical file
+UUFICPP,Project EB Int Chrg Physical file
+UUFJCPP,AR Invoice Trans Spec Physical file
+UUFKREP,EB Int Chrg Dflts Physical file
+UUFLCPP,Project EB Int Chrg Tran Physical file
+UUFMCPP,WJ Commissions Physical file
+UUFNREP,Project Spreadsheet Split Physical file
+UUFOCPP,AR Uncertified Billing Physical file
+UUFPCPP,Time Sheets Notes Physical file
+UUFQCPP,PR Emp & Fam Assist Pgm Physical file
+UUFRCPP,GL Fisc Per Bal Ptnr Physical file
+UUFTCPP,GL Fsc Per Bl Std D Ptnr Physical file
+UUFUCPP,Contract History Ptnr Physical file
+UUFVREP,Provincial Tax Base Physical file
+UUFWCPP,Budget Std Desc Physical file
+UUFZREP,ML Salutation Physical file
+UUF0REP,PR Y/E Flags By Group Physical file
+UUF1CPP,Year End Accruals Physical file
+UUF2CPP,PIM4150 Data Partner Physical file
+UUF3CPP,PIM4150 Forecast Partner Physical file
+UUF4CPP,P&L Indirect Ovrhd Ptnr Physical file
+UUF5CPP,P&L Ctrl Incm Ptnr Physical file
+UUF6CPP,P&L Ctrl O Incm Ptnr Physical file
+UUF7CPP,P&L Ctrl Incm Ptnr Ac Physical file
+UUF8CPP,P&L Ctrl Incm Ptnr Ac Frc Physical file
+UUF9CPP,P&L Ctrl O Incm Ptnr Ac Physical file
+UUGACPP,P&L Ctrl O Incm Ptnr Ac F Physical file
+UUGBCPP,P&L Ctrl O Incm Ptnr Ln Physical file
+UUGCCPP,Sub-Contract by Region Physical file
+UUGDREP,Element Type Physical file
+UUGEREP,Element Master Physical file
+UUGFREP,Sub-Element Master Physical file
+UUGGREP,Bid Company Master Physical file
+UUGHREP,Bid Project Physical file
+UUGICPP,Concrete/Formwork Breakdn Physical file
+UUGJCPP,Building/Sitework Area Physical file
+UUGKCPP,Bid Rank Physical file
+UUGLCPP,Bid Project Comment Physical file
+UUGMCPP,Bid Project Element Physical file
+UUGNCPP,Bid Project Sub-Element Physical file
+UUGOREP,Formwork System Physical file
+UUGPREP,Owner Contact Physical file
+UUGQREP,Owner Address Physical file
+UUGRCPP,Bid Project O/A/E Physical file
+UUGSCPP,Owner Contact Comment Physical file
+UUGTREP,Owner Contact Type Physical file
+UUGUCPP,P&L Ctrl Incm Ptnr Ln Physical file
+UUGVCPP,P&L Ctrl Incm Ptnr Ln Wd Physical file
+UUGWREP,Architect Address Physical file
+UUGXREP,Architect Contact Physical file
+UUGYCPP,Architect Contact Comment Physical file
+UUGZREP,Marketing Extension Physical file
+UUG0CPP,Questionnaire Physical file
+UUG1CPP,Project Comment Physical file
+UUG2REP,Consultant Physical file
+UUG3REP,SIC Area Physical file
+UUG4REP,Consultant Project Physical file
+UUG5REP,Consultant Contact Physical file
+UUG6REP,Consultant Address Physical file
+UUG7CPP,Budget Partner Physical file
+UUG8CPP,Budget Period Bal Ptnr Physical file
+UUG9CPP,Budget Std Desc Ptnr Physical file
+UUHACPP,Budget Change Order Ptnr Physical file
+UUHBCPP,Budget PR O/H Actual Ptnr Physical file
+UUHCCPP,Fiscal Calendar Ptnr Physical file
+UUHEREP,Estimating Vendor Contact Physical file
+UUHFREP,Project Monthly Changes Physical file
+UUHGCPP,Fixed Asset AP Inv Physical file
+UUHHREP,Vendor Inactive Physical file
+UUHIREP,Estimating Vendor Physical file
+UUHJREP,Project Component Physical file
+UUHKCPP,AR Invoice Spec Physical file
+UUHLCPP,Fixed Asset Cmpnt Physical file
+UUHMCPP,AR Billing Group Physical file
+UUHNREP,AR Billing Sect Physical file
+UUHOREP,AR Default Sect Physical file
+UUHPREP,AR Default Sect Spec Physical file
+UUHQCPP,AR Invoice Sect Physical file
+UUHRREP,AR Billing Sect Desc Physical file
+UUHSREP,AR Billing Spec Desc Physical file
+UUHTCPP,AR Invoice Sect Desc Physical file
+UUHUCPP,AR Invoice Spec Desc Physical file
+UUHVREP,AR Billing Group Invoice Physical file
+UUHWREP,AR Area Address Ovrd Physical file
+UUHXCPP,AR Invoice Proj Component Physical file
+UUHYCPP,AP Invoice SC CPOC Physical file
+UUHZCPP,Time Sheets Notes Entry Physical file
+UUH0CPP,Employee Master Notes Physical file
+UUH3REP,Payroll Benefit Life Physical file
+UUH4CPP,Fixed Asset Nxt Yr Depr Physical file
+UUH6REP,Payroll Ben AB HC Empr Physical file
+UUH7CPP,Employee Salary Change G3 Physical file
+UUH8CPP,Emp Life/LTD Salary Physical file
+UUH9REP,Company Comment Physical file
+UUIACPP,CIBC CashFlow Dwnld Physical file
+UUIBCPP,CIBC CashFlow Physical file
+UUICCPP,CIBC CashFlow Trans Physical file
+UUIDCPP,Employee Bonus Physical file
+UUIEREP,CIBC CF Trans Offset Physical file
+UUIFCPP,AR Invoice Notes Physical file
+UUIGCPP,Payroll US ADP Physical file
+UUIHCPP,AR Invoice Trans Notes Physical file
+UUIIREP,Cashed Cheques from Bank Physical file
+UUIJCPP,Payroll US ADP DSJ Physical file
+UUIKCPP,Payroll US ADP GL Trans Physical file
+UUILREP,Sub-Area Address Physical file
+UUINREP,Employee Approval Auth Physical file
+UUIOCPP,AP Purchase Card CIBC Physical file
+UUIQCPP,AP Inv Pymnt Physical file
+UUIRCPP,AP Sub Invoice Physical file
+UUISCPP,AP Sub Invoice CPOC Physical file
+UUITCPP,AP Inv Pymnt Dist GST Physical file
+UUIVREP,Payroll Cheque Message Physical file
+UUIWCPP,Cashed Cheques USA Physical file
+UUIYCPP,AR Billing Spec SC/CPOC Physical file
+UUIZCPP,AR SIC Spec SC/CPOC Physical file
+UUI2CPP,AP Inv Pymnt Dist Physical file
+UUI6REP,Sub-Contract Remit To Physical file
+UUI8REP,Project County Physical file
+UUI9CPP,Equip Utilization Output Physical file
+UUJACPP,PR WCB Asesbl Earn Physical file
+UUJBCPP,PR WCB Mthly Asesbl Earn Physical file
+UUJCREP,PR WCB Asesbl Max Earn Physical file
+UUJDCPP,Time Sheets Calc V/P Physical file
+UUJECPP,Time Sheets Calc Bnft Physical file
+UUJFREP,Bonding Area Physical file
+UUJGCPP,SC Pymnt Trkg Physical file
+UUJHREP,Bonding Spreadsheet Physical file
+UUJICPP,PR WCB Rate Element Physical file
+UUJJCPP,AP Invoice SC Cnvrsn Physical file
+UUJKREP,Bonding Comment Physical file
+UUJLCPP,AR Invoice Spec DwnLd Physical file
+UUJMREP,SIC Local Call Area Physical file
+UUJNREP,Eq Category/AP Desc Xref Physical file
+UUJOCPP,Bonding Spreadsheet HST Physical file
+UUJPREP,AP Pay Trade Prj Ovrd Physical file
+UUJQCPP,AP Pay Trade Auth Inv Physical file
+UUJRREP,Payroll Code Class Physical file
+UUJSREP,Payroll Alternate Class Physical file
+UUJTCPP,AP Invoice TR Physical file
+UUJUCPP,Material Detail TR Physical file
+UUJVCPP,Purchase Orders TR Physical file
+UUJWCPP,Purchase Orders TR Detail Physical file
+UUJXCPP,PR WCB Report Work Physical file
+UUJYREP,GJC A/P Inv Dtl Physical file
+UUJZREP,AP Pay Trade Prj Ovrd Usr Physical file
+UUJ0REP,Project EB Int Chrg Tr YE Physical file
+UUJ2CPP,Project Misc GST File Physical file
+UUJ3CPP,AP Invoice TR Summary Physical file
+UUJ4CPP,Project Comp Misc GST Physical file
+UUJ5CPP,Label Workfile Physical file
+UUJ7REP,SIC Fax Control File Physical file
+UUJ8REP,AP Cheque Message Physical file
+UUJ9CPP,Project Component Ext Physical file
+UUKAREP,SC Dirct Depst Ctrl Ovrd Physical file
+UUKBREP,Employee Payroll Codes Ex Physical file
+UUKCCPP,AP Direct Deposit Rcd A Physical file
+UUKDCPP,AP Direct Deposit Rcd C Physical file
+UUKECPP,AP Direct Deposit Rcd Z Physical file
+UUKFCPP,SC Pymnt Trkg Ctrl Physical file
+UUKGREP,SC Pymnt Trkg Ctrl Type Physical file
+UUKHREP,Company Mirror Netting Physical file
+UUKIREP,MN Transaction Offset Physical file
+UUKJREP,OX Yard Physical file
+UUKKREP,OX Rental Category Physical file
+UUKLREP,OX Rental Mark-up Physical file
+UUKNCPP,AP Direct Deposit Report Physical file
+UUKOREP,OX Rental Item Physical file
+UUKPREP,OX Customer Physical file
+UUKQCPP,AP Dirct Depst Auth Sts Physical file
+UUKRREP,OX Sale Item Category Physical file
+UUKSREP,OX Sale Item Description Physical file
+UUKTREP,OX Tax Percent Physical file
+UUKUREP,OX Sale Item Yard Physical file
+UUKVCPP,OX Reservation Physical file
+UUKWCPP,OX Reservation Detail Physical file
+UUKXREP,SC Pymnt EB Trkg Ctrl Physical file
+UUKYREP,OX Sales Mark-up Physical file
+UUKZCPP,BNS Electronic Statement Physical file
+UUK0CPP,BNS ES Transactions Physical file
+UUK1CPP,SC Pymnt EB Trkg Physical file
+UUK2REP,Vendor Notes In Physical file
+UUK3CPP,OX Contract Physical file
+UUK4CPP,OX Contract Detail Physical file
+UUK5CPP,Stmnt Of Cntrcts Adj Physical file
+UUK6REP,PR WCB Rate Physical file
+UUK7CPP,OX AR Invoice Physical file
+UUK8CPP,OX AR Payment Physical file
+UUK9REP,OX Rental Sub Category Physical file
+UULAREP,OX Sale Catg CONV Physical file
+UULBREP,OX Rental Catg CONV Physical file
+UULCREP,Fixed Asset Master Physical file
+UULDREP,Fixed Asset Type Physical file
+UULEREP,Fixed Asset Maint. Code Physical file
+UULFREP,Fixed Asset Warranty Type Physical file
+UULGREP,Fixed Asset Tax Class Physical file
+UULHREP,Vendor Extension Physical file
+UULIREP,Fixed Asset Group Physical file
+UULJREP,Fixed Asset Group Auth Physical file
+UULKREP,OX Calendar Physical file
+UULLCPP,Cashed Cheques Seafirst Physical file
+UULMCPP,Cashed Cheques Southtrust Physical file
+UULNCPP,OX Inventory Receipt Physical file
+UULOCPP,Issued Cheques ADP Physical file
+UULPCPP,Change Order Details Cmt Physical file
+UULQCPP,Fixed Asset Comments Physical file
+UULRCPP,Fixed Asset Trans Physical file
+UULSCPP,Billing To Billing Info Physical file
+UULTREP,Project Labour OT Dist Physical file
+UULUCPP,P&L Indirect Overhead Physical file
+UULVREP,OX Rental/Sale Item NOTES Physical file
+UULWREP,Fixed Asset Code Prefix Physical file
+UULXCPP,AR Payments Extension Physical file
+UULYCPP,Billing to Billing Consol Physical file
+UULZREP,WJ Owner/Lessee Physical file
+UUL0REP,WJ Contract Physical file
+UUL1CPP,WJ Contract Comment Physical file
+UUL2REP,WJ Maintenance Fee Physical file
+UUL3REP,WJ Inventory Physical file
+UUL4REP,WJ Timeshare Unit Physical file
+UUL5REP,WJ Unit Type/Style Physical file
+UUL6REP,WJ Contract Expense Physical file
+UUL7REP,WJ Payment Schedule DUMMY Physical file
+UUL8CPP,WJ Contract Billing Physical file
+UUL9CPP,WJ Cheque Physical file
+UUMACPP,OX Contract Detail NOTES Physical file
+UUMAREP,WJ Bank Physical file
+UUMBREP,AR Progress Inv Authority Physical file
+UUMCCPP,WJ Contract Payment Physical file
+UUMDCPP,WJ CONV Paid TD Physical file
+UUMECPP,AR Spec Unlinked Physical file
+UUMFCPP,AR Spec Unlinked Detail Physical file
+UUMGCPP,Batch Header Extension Physical file
+UUMHCPP,AP Inv SC Auth Physical file
+UUMIREP,WJ Billing Calendar Physical file
+UUMJCPP,SC Rqst For Pymnt Physical file
+UUMKCPP,AR Late Billing Physical file
+UUMMREP,CM Budget Spec Physical file
+UUMPREP,Currency Conversion Physical file
+UUMRREP,CM Bid Package Physical file
+UUMSREP,PSIC Master Physical file
+UUMTREP,Purchasing Vendor Physical file
+UUMUREP,Purchasing Book Master Physical file
+UUMVCPP,CM Est Future Committment Physical file
+UUMWCPP,Purchase Order Comments Physical file
+UUMXCPP,Employee Company Re-Hire Physical file
+UUMYCPP,T4 Slip Record Ext Physical file
+UUMZCPP,AR Aging Over 60 Physical file
+UUM1REP,Alternate Printer Physical file
+UUM2REP,Company Currency Cnvrsn Physical file
+UUM3REP,Sub-Contract Exchange Physical file
+UUM4REP,Sub-Contract CPOC Exchg Physical file
+UUM5CPP,AP Sub Acrl 1 SC OS-AR Physical file
+UUM6CPP,AP Sub Acrl 3 AR-SC A Dtl Physical file
+UUM7CPP,AP Sub Acrl 2 AR-SC Acrl Physical file
+UUM8CPP,Budget PR O/H Actual Physical file
+UUM9REP,Project Cur Cnvrsn Rates Physical file
+UUNACPP,AP Sub Acrl 4 AR-SC Mx Al Physical file
+UUNBCPP,AP Cheques Extension Physical file
+UUNCCPP,SIC Received Fax In Use Physical file
+UUNDREP,Project Sub-Guard Info Physical file
+UUNECPP,SC SG IMP RFRSH CTR TXT Physical file
+UUNFCPP,SC SG IMP SCTOR INP Physical file
+UUNGCPP,PR Direct Depositm Report Physical file
+UUNHCPP,Cashed Cheques NBD Physical file
+UUNICPP,Project Spreadsheet HST Physical file
+UUNJCPP,Employee Layoffs Physical file
+UUNKCPP,AR Invoice Lock Physical file
+UUNLCPP,AR Invoice Project Lock Physical file
+UUNMREP,Business Minority Physical file
+UUNNCPP,Cash Flow Per Projctn Physical file
+UUNOCPP,Cash Flow Tot Projctn Physical file
+UUNPREP,Class/Division Desc Ovrd Physical file
+UUNQCPP,AP Cheque Microfilm Index Physical file
+UUNTCPP,Canada Payroll Savings Physical file
+UUNUCPP,T4 RCTTAX File Physical file
+UUNVCPP,PST Variances/Exemptions Physical file
+UUNWREP,User Authority Approval Physical file
+UUNXREP,User Authority Physical file
+UUNYCPP,SC SG IMP PMG CNTC INP Physical file
+UUNZCPP,SC SG IMP PROJ INP Physical file
+UUN0CPP,SC SG IMP SCACT 001 INP Physical file
+UUN1CPP,Project Client First Physical file
+UUN2CPP,Sub-Contract Notes Out Physical file
+UUN3CPP,AR Billing Spec Out Physical file
+UUN4CPP,Voucher Header Comment Physical file
+UUN5CPP,OX Customer Comment Physical file
+UUN6REP,AR Billing Spec Link Er Physical file
+UUN7REP,AR Billing Spec Link Er U Physical file
+UUN8REP,Employee Notes Email In Physical file
+UUN9REP,Stmnt Of Cntr Ctrl Physical file
+UUOAREP,Stmnt Of Cntr Ctrl SA Physical file
+UUOBREP,Project Sub-Guard Rate Physical file
+UUOCREP,SC SG SC Selected Physical file
+UUOECPP,AP Cheque Microfilm Dwnld Physical file
+UUOGCPP,Project Financial Info Physical file
+UUOHCPP,T4 RCTTAX XML File Physical file
+UUOJCPP,Canada Payroll Savings DL Physical file
+UUOLCPP,Sub-Contract Financl Info Physical file
+UUOMCPP,SC Direct Deposit Count Physical file
+UUONREP,Insurance Project Physical file
+UUOOCPP,OX Customer Comment A/R Physical file
+UUOPREP,Balance Sheet Anal WKF Physical file
+UUOQCPP,Bal Sheet Analy - WKF2 Physical file
+UUOSCPP,Balance Sheet WKF Excel Physical file
+UUOTREP,OX Salesperson Physical file
+UUOUCPP,AP Invoice Notes In Physical file
+UUOVCPP,AP Invoice Notes In Dtl Physical file
+UUOXCPP,Projects Compl EXCEL Physical file
+UUOYCPP,Project V2 Insurance Physical file
+UUOZCPP,Insurance Cert Build Risk Physical file
+UUO0CPP,Insurance Joint Vent Comp Physical file
+UUO1REP,Insurance Project J.Vent Physical file
+UUO3REP,Insurance Project Ext Physical file
+UUO4REP,Project EB Retired Physical file
+UUO5CPP,Insurance Cert/Projects Physical file
+UUO6REP,Insurance Cert Liability Physical file
+UUO8CPP,Notes Utility Physical file
+UUO9REP,Notes Address Book ED Physical file
+UUQAREP,Notes Address Book EB Physical file
+UUQBCPP,TX Products Physical file
+UUQCCPP,TX Customer Physical file
+UUQDCPP,TX Customer Balances Physical file
+UUQECPP,TX Special Pricing Physical file
+UUQFCPP,TX Vendors Physical file
+UUQGCPP,TX Vendor Balances Physical file
+UUQICPP,SC Pymnt Trkg Ctrl Notes Physical file
+UUQJCPP,TX Category CONV Physical file
+UUQKCPP,TX Invoice Download Physical file
+UUQLCPP,TX Invoice Rec Z Physical file
+UUQMCPP,TX Invoice Rec H Physical file
+UUQNCPP,PR Accrued Incentive-Cost Physical file
+UUQPCPP,TX Invoice Rec D Physical file
+UUQQCPP,AR Invoice Trans Work Physical file
+UUQRCPP,TX Invoice Rec C Physical file
+UUQSCPP,TX Invoice Rec N Physical file
+UUQTCPP,TX Invoice Rec S Physical file
+UUQUCPP,Employee Share Loan Chg Physical file
+UUQVREP,TX Lockbox Batch Number Physical file
+UUQWCPP,TX Lockbox Download Physical file
+UUQXCPP,AR Late Payment Interest Physical file
+UUQ0REP,TX Service Description Physical file
+UUQ1REP,EB Customer Physical file
+UUQ2REP,EB Customer Ship To Physical file
+UUQ3REP,Business Sector Physical file
+UUQ4REP,EB Credit Card Info Physical file

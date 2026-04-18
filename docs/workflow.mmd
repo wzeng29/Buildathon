@@ -1,0 +1,81 @@
+flowchart TD
+    User[Slack or CLI user]
+    Slack[src/slack_app.py]
+    Main[src/main.py]
+    Agent[BuildAgents<br/>src/agent.py]
+    Parser[parse_action_request<br/>src/command_parser.py]
+    JiraFlow[JiraPerformanceWorkflowConnector]
+
+    Jira[Jira ticket read and comment]
+    Strategy[Strategy step]
+    ScriptGen[Script generation step]
+    ScriptEval[Script validation step]
+    K6Run[k6 execution step]
+    Report[Report generation step]
+    Analysis[Analysis step]
+    Grafana[Grafana enrichment]
+    Git[Git versioning]
+
+    LLM[OpenAIResponder<br/>src/llm.py]
+    PerfTools[K6Workspace<br/>src/perf_tools.py]
+    PerfRepo[performance/tests + performance/results]
+
+    SkillRoot[docs/skills/]
+    StrategySkill[performance-testing-strategy]
+    K6Skill[k6-best-practices]
+    AnalysisSkill[performance-report-analysis]
+
+    StrategyRefs[references/*.md]
+    StrategyEvals[evals/evals.json]
+    K6Refs[references/*.md]
+    K6Evals[evals/evals.json]
+    AnalysisRefs[references/*.md]
+    AnalysisEvals[evals/evals.json]
+
+    User --> Slack
+    User --> Main
+    Slack --> Agent
+    Main --> Agent
+    Agent --> Parser
+    Parser --> JiraFlow
+
+    JiraFlow --> Jira
+    JiraFlow --> Strategy
+    JiraFlow --> ScriptGen
+    JiraFlow --> ScriptEval
+    JiraFlow --> K6Run
+    JiraFlow --> Report
+    JiraFlow --> Analysis
+    JiraFlow --> Grafana
+    JiraFlow --> Git
+
+    Strategy --> LLM
+    ScriptGen --> LLM
+    Analysis --> LLM
+
+    Strategy --> StrategySkill
+    ScriptGen --> K6Skill
+    ScriptEval --> K6Skill
+    Analysis --> AnalysisSkill
+
+    SkillRoot --> StrategySkill
+    SkillRoot --> K6Skill
+    SkillRoot --> AnalysisSkill
+
+    StrategySkill --> StrategyRefs
+    StrategySkill --> StrategyEvals
+    K6Skill --> K6Refs
+    K6Skill --> K6Evals
+    AnalysisSkill --> AnalysisRefs
+    AnalysisSkill --> AnalysisEvals
+
+    ScriptGen --> PerfTools
+    K6Run --> PerfTools
+    Report --> PerfTools
+    PerfTools --> PerfRepo
+
+    Jira --> Report
+    Report --> Jira
+    Grafana --> Report
+    Report --> Git
+    Analysis --> Report
