@@ -4,6 +4,14 @@ import re
 
 from src.models import ActionRequest, SearchDocument
 
+# LEGACY COMPATIBILITY ONLY.
+# These regex-based parsers are intentionally not part of the primary BuildAgents routing path.
+# The runtime agent now prefers LLM-driven tool selection and execution.
+# Keep this module only for:
+# - compatibility/unit tests around historical command parsing behavior
+# - lightweight field extraction reused by slash-skill parsing
+# Do not route new main-path execution logic back through this module.
+
 COMMAND_PATTERN = re.compile(
     r"^\s*(create|read|get|update|edit|delete|remove|close|run)\s+"
     r"(jira|confluence|k6|grafana)\s+"

@@ -5,11 +5,21 @@ import re
 import threading
 from threading import Event
 from pathlib import Path
+from typing import Any
 
-from slack_sdk.socket_mode import SocketModeClient
-from slack_sdk.socket_mode.request import SocketModeRequest
-from slack_sdk.socket_mode.response import SocketModeResponse
-from slack_sdk.web import WebClient
+try:  # pragma: no cover - optional dependency in local test environments
+    from slack_sdk.socket_mode import SocketModeClient
+    from slack_sdk.socket_mode.request import SocketModeRequest
+    from slack_sdk.socket_mode.response import SocketModeResponse
+    from slack_sdk.web import WebClient
+except Exception:  # pragma: no cover - import success depends on environment
+    SocketModeClient = Any  # type: ignore[assignment]
+    SocketModeRequest = Any  # type: ignore[assignment]
+    WebClient = Any  # type: ignore[assignment]
+
+    class SocketModeResponse:  # type: ignore[no-redef]
+        def __init__(self, envelope_id: str) -> None:
+            self.envelope_id = envelope_id
 
 from config import settings
 from src.agent import BuildAgents, format_slack_response
@@ -21,8 +31,15 @@ logging.basicConfig(
 )
 LOGGER = logging.getLogger(__name__)
 
-agent = BuildAgents()
+_agent_instance: BuildAgents | None = None
 k6_workspace = K6Workspace()
+
+
+def _get_agent() -> BuildAgents:
+    global _agent_instance
+    if _agent_instance is None:
+        _agent_instance = BuildAgents()
+    return _agent_instance
 
 
 def _build_web_client() -> WebClient | None:
@@ -85,7 +102,7 @@ def _process_event_async(
     try:
         LOGGER.info("Running agent for question: %r", question[:200])
         conversation_id = _conversation_id_for_event(event)
-        result = agent.answer(question, conversation_id=conversation_id)
+        result = _get_agent().answer(question, conversation_id=conversation_id)
         reply_text = format_slack_response(result)
         LOGGER.info("Agent finished with %s citations.", len(result.citations))
 

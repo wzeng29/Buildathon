@@ -43,3 +43,20 @@ class ActionResult:
     message: str
     document: SearchDocument | None = None
     details: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class LLMToolCall:
+    """Structured tool call returned by the LLM."""
+
+    id: str
+    name: str
+    arguments: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class LLMToolResponse:
+    """Assistant response that may include tool calls."""
+
+    content: str
+    tool_calls: list[LLMToolCall] = field(default_factory=list)

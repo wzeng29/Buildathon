@@ -1,29 +1,31 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 from pathlib import Path
 from typing import Iterable
 
 from config import settings
-from src.command_parser import parse_action_request, parse_contextual_action_request
-from src.connectors import BaseConnector, build_connectors
+from src.connectors import BaseConnector, _fix_mojibake, _strip_html, build_connectors
 from src.llm import OpenAIResponder
 from src.memory import RedisConversationMemory
-from src.multi_agent import AnswerSynthesisAgent, RequirementUnderstandingAgent, RetrievalAgent
-from src.models import ActionRequest, AgentAnswer, SearchDocument
+from src.models import ActionRequest, AgentAnswer, LLMToolResponse, SearchDocument
+from src.command_parser import parse_action_request, parse_contextual_action_request
 from src.skills import parse_skill_request
+from src.tool_prompts import build_llm_tool_messages
+from src.tool_registry import (
+    build_llm_tools,
+    normalize_tool_fields,
+    operation_from_action_tool_name,
+    source_from_search_tool_name,
+    target_from_action_tool_name,
+)
 
-CONNECTOR_HINTS: dict[str, tuple[str, ...]] = {
-    "as400": ("as400", "ibm i", "ibmi", "command", "cl", "wrkobj", "dspobjd"),
-    "jira": ("jira", "ticket", "story", "bug", "status"),
-    "confluence": ("confluence", "doc", "page", "knowledge", "kb"),
-    "k6": ("k6", "performance", "load", "stress", "soak", "test", "report"),
-    "grafana": ("grafana", "dashboard", "metrics", "latency", "panel"),
-}
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ALLOWED_SOURCE_ROOT = (PROJECT_ROOT / "files").resolve()
 LOGGER = logging.getLogger(__name__)
+TOOL_CALL_LIMIT = 6
 
 
 class BuildAgents:
@@ -34,16 +36,10 @@ class BuildAgents:
         connectors: Iterable[BaseConnector] | None = None,
         responder: OpenAIResponder | None = None,
         memory: RedisConversationMemory | None = None,
-        understanding_agent: RequirementUnderstandingAgent | None = None,
-        retrieval_agent: RetrievalAgent | None = None,
-        synthesis_agent: AnswerSynthesisAgent | None = None,
     ) -> None:
         self.connectors = list(connectors or build_connectors())
         self.responder = responder or OpenAIResponder()
         self.memory = memory or RedisConversationMemory()
-        self.understanding_agent = understanding_agent or RequirementUnderstandingAgent()
-        self.retrieval_agent = retrieval_agent or RetrievalAgent()
-        self.synthesis_agent = synthesis_agent or AnswerSynthesisAgent()
 
     def answer(self, question: str, conversation_id: str | None = None) -> AgentAnswer:
         """Route explicit CRUD commands or answer a source-backed search question."""
@@ -56,32 +52,25 @@ class BuildAgents:
             )
 
         action_request = parse_skill_request(question)
-        if action_request is not None:
-            reasoning_trace.append(
-                "Resolved slash skill: "
-                f"{action_request.operation} {action_request.target_system} {action_request.target_type}"
-            )
-        else:
+        if action_request is None:
             action_request = parse_action_request(question)
         if action_request is None:
             action_request = parse_contextual_action_request(question, last_reference)
-            if action_request is not None:
-                reasoning_trace.append(
-                    "Resolved follow-up action against the last referenced document in memory"
-                )
-        if action_request is None:
-            action_request = self._infer_action_request_via_llm(question)
-            if action_request is not None:
-                reasoning_trace.append(
-                    "Inferred executable intent via LLM because no explicit command syntax matched"
-                )
-            else:
-                fallback_request = self._infer_action_request_deterministically(question)
-                if fallback_request is not None:
-                    action_request = fallback_request
-                    reasoning_trace.append(
-                        "Inferred executable intent via deterministic fallback after LLM classification returned no action"
-                    )
+        if action_request is not None:
+            reasoning_trace.append(
+                "Resolved explicit action request: "
+                f"{action_request.operation} {action_request.target_system} {action_request.target_type}"
+            )
+        llm_result = self._answer_via_llm_tools(
+            question=question,
+            conversation_history=conversation_history,
+            last_reference=last_reference,
+            reasoning_trace=reasoning_trace,
+            preferred_action=action_request,
+        )
+        if llm_result is not None:
+            self.memory.append_turn(conversation_id, question, llm_result.answer, llm_result.citations)
+            return llm_result
         if action_request is not None:
             reasoning_trace.append(
                 "Parsed action: "
@@ -91,25 +80,16 @@ class BuildAgents:
             self.memory.append_turn(conversation_id, question, result.answer, result.citations)
             return result
 
-        interpreted = self.understanding_agent.analyze(question, last_reference)
-        if interpreted.retrieval_question != question:
+        retrieval_question = self._expand_retrieval_question(question, last_reference)
+        if retrieval_question != question:
             reasoning_trace.append("Expanded the follow-up question using the last referenced document")
-        if interpreted.preferred_sources:
-            reasoning_trace.append(
-                "Understanding agent preferred sources: " + ", ".join(interpreted.preferred_sources)
-            )
-        selected = self.retrieval_agent.select_connectors(
-            self.connectors,
-            interpreted,
-            CONNECTOR_HINTS,
-            last_reference,
-        )
+        selected = [connector for connector in self.connectors if connector.configured]
         reasoning_trace.append(
             "Selected tools: " + ", ".join(connector.source_type for connector in selected)
         )
 
-        evidence = self._collect_evidence(interpreted.retrieval_question, selected, reasoning_trace)
-        ranked = self._rank(interpreted.retrieval_question, self._deduplicate(evidence))[: settings.max_citations]
+        evidence = self._collect_evidence(retrieval_question, selected, reasoning_trace)
+        ranked = self._rank(retrieval_question, self._deduplicate(evidence))[: settings.max_citations]
         citations = self._filter_relevant_citations(ranked, last_reference)
         reasoning_trace.append(f"Kept {len(ranked)} source-backed documents after ranking")
         if len(citations) != len(ranked):
@@ -118,12 +98,7 @@ class BuildAgents:
             )
 
         evidence_text = self._format_evidence(citations)
-        answer = self.synthesis_agent.compose(
-            self.responder,
-            question,
-            evidence_text,
-            conversation_history,
-        )
+        answer = self.responder.generate(question, evidence_text, conversation_history)
         self.memory.append_turn(conversation_id, question, answer, citations)
         return AgentAnswer(answer=answer, citations=citations, reasoning_trace=reasoning_trace)
 
@@ -162,103 +137,169 @@ class BuildAgents:
                 return connector
         return None
 
-    def _infer_action_request_via_llm(self, question: str) -> ActionRequest | None:
-        """Use the LLM to classify natural-language executable intents into action requests."""
-        payload = self.responder.call_function(
-            system_prompt=(
-                "You classify whether a user message is asking the assistant to execute an action "
-                "using one of the configured enterprise tools, or is only asking an informational question. "
-                "Prefer `is_action=false` unless the user is clearly asking the system to do something."
-            ),
-            user_prompt=(
-                f"User message:\n{question}\n\n"
-                "Available targets:\n"
-                "- jira ticket\n"
-                "- jira workflow\n"
-                "- confluence page\n"
-                "- k6 test\n"
-                "- k6 report\n"
-                "- k6 workflow\n"
-                "- grafana dashboard\n\n"
-                "Interpret natural requests such as asking to generate a plan, run a workflow, create/update a ticket, "
-                "or fetch a concrete artifact as actions when appropriate."
-            ),
-            function_name="classify_action_request",
-            function_description="Classify whether the user wants an executable action, and if so return the structured action request.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "is_action": {"type": "boolean"},
-                    "operation": {
-                        "type": "string",
-                        "enum": ["create", "read", "update", "delete", "run"],
-                    },
-                    "target_system": {
-                        "type": "string",
-                        "enum": ["jira", "confluence", "k6", "grafana"],
-                    },
-                    "target_type": {
-                        "type": "string",
-                        "enum": ["ticket", "page", "test", "report", "workflow", "dashboard"],
-                    },
-                    "identifier": {"type": "string"},
-                    "fields": {
-                        "type": "object",
-                        "additionalProperties": {"type": "string"},
-                    },
-                },
-                "required": ["is_action", "operation", "target_system", "target_type", "identifier", "fields"],
-                "additionalProperties": False,
-            },
-            temperature=0.0,
+    def _answer_via_llm_tools(
+        self,
+        question: str,
+        conversation_history: list[dict[str, str]],
+        last_reference: SearchDocument | None,
+        reasoning_trace: list[str],
+        preferred_action: ActionRequest | None = None,
+    ) -> AgentAnswer | None:
+        """Let the LLM plan and execute connector tool calls in a bounded loop."""
+        tools = self._llm_tools()
+        if not tools:
+            return None
+
+        messages = build_llm_tool_messages(
+            self.connectors,
+            question,
+            conversation_history,
+            last_reference,
+            preferred_action=preferred_action,
         )
-        LOGGER.info("LLM action classification payload=%s for question=%r", payload, question[:200])
-        if not isinstance(payload, dict) or not payload.get("is_action"):
-            return None
-        operation = str(payload.get("operation") or "").strip().lower()
-        target_system = str(payload.get("target_system") or "").strip().lower()
-        target_type = str(payload.get("target_type") or "").strip().lower()
-        identifier = str(payload.get("identifier") or "").strip() or None
-        fields = payload.get("fields") or {}
-        if not isinstance(fields, dict):
-            fields = {}
-        normalized_fields = {
-            str(key): str(value)
-            for key, value in fields.items()
-            if str(key).strip() and value is not None
-        }
-        if operation not in {"create", "read", "update", "delete", "run"}:
-            return None
-        if target_system not in {"jira", "confluence", "k6", "grafana"}:
-            return None
-        if target_type not in {"ticket", "page", "test", "report", "workflow", "dashboard"}:
-            return None
-        return ActionRequest(
-            operation=operation,
-            target_system=target_system,
-            target_type=target_type,
-            identifier=identifier,
-            fields=normalized_fields,
-        )
+        collected_citations: list[SearchDocument] = []
+
+        for iteration in range(TOOL_CALL_LIMIT):
+            response = self.responder.respond_with_tools(messages=messages, tools=tools, temperature=0.0)
+            if self._has_tool_response(response):
+                reasoning_trace.append(
+                    f"LLM tool loop iteration {iteration + 1} returned {len(response.tool_calls)} tool call(s)"
+                )
+            if not response.tool_calls:
+                final_text = (response.content or "").strip()
+                if final_text:
+                    reasoning_trace.append("LLM finished after tool execution")
+                    return AgentAnswer(
+                        answer=final_text,
+                        citations=self._deduplicate(collected_citations)[: settings.max_citations],
+                        reasoning_trace=reasoning_trace,
+                    )
+                return None
+
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": response.content or "",
+                    "tool_calls": [
+                        {
+                            "id": tool_call.id,
+                            "type": "function",
+                            "function": {
+                                "name": tool_call.name,
+                                "arguments": json.dumps(tool_call.arguments),
+                            },
+                        }
+                        for tool_call in response.tool_calls
+                    ],
+                }
+            )
+
+            for tool_call in response.tool_calls:
+                tool_result, tool_citations = self._execute_llm_tool_call(
+                    tool_call.name,
+                    tool_call.arguments,
+                    reasoning_trace,
+                )
+                collected_citations.extend(tool_citations)
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": tool_result,
+                    }
+                )
+
+        reasoning_trace.append("LLM tool loop hit the safety iteration limit")
+        return None
+
+    def _llm_tools(self) -> list[dict[str, object]]:
+        """Expose each connector as explicit LLM-callable tools."""
+        return build_llm_tools(self.connectors)
+
+    def _execute_llm_tool_call(
+        self,
+        tool_name: str,
+        arguments: dict[str, object],
+        reasoning_trace: list[str],
+    ) -> tuple[str, list[SearchDocument]]:
+        """Execute one LLM-requested tool call and serialize the result back to the model."""
+        search_source = source_from_search_tool_name(tool_name)
+        if search_source is not None:
+            query = str(arguments.get("query") or "").strip()
+            selected = [
+                connector
+                for connector in self.connectors
+                if connector.configured and connector.source_type == search_source
+            ]
+            if not query or not selected:
+                reasoning_trace.append("LLM requested search tool with insufficient arguments")
+                return json.dumps({"ok": False, "message": "Missing query or valid source."}), []
+
+            reasoning_trace.append(
+                "LLM selected tools: " + ", ".join(connector.source_type for connector in selected)
+            )
+            evidence = self._collect_evidence(query, selected, reasoning_trace)
+            ranked = self._rank(query, self._deduplicate(evidence))[: settings.max_citations]
+            reasoning_trace.append(f"LLM search kept {len(ranked)} source-backed documents after ranking")
+            return json.dumps(
+                {
+                    "ok": True,
+                    "query": query,
+                    "documents": [
+                        {
+                            "source_type": document.source_type,
+                            "title": document.title,
+                            "url": document.url,
+                            "metadata": document.metadata,
+                            "content": document.content[:1500],
+                        }
+                        for document in ranked
+                    ],
+                }
+            ), ranked
+
+        action_target = target_from_action_tool_name(tool_name)
+        if action_target is not None:
+            operation = (
+                str(arguments.get("operation") or "").strip().lower()
+                or str(operation_from_action_tool_name(tool_name) or "").strip().lower()
+            )
+            identifier = str(arguments.get("identifier") or "").strip() or None
+            fields = normalize_tool_fields(arguments.get("fields") or {})
+            target_system, target_type = action_target
+            request = ActionRequest(
+                operation=operation,
+                target_system=target_system,
+                target_type=target_type,
+                identifier=identifier,
+                fields=fields,
+            )
+            reasoning_trace.append(f"LLM selected action tool: {operation} {target_system} {target_type}")
+            result = self._execute_action(request, reasoning_trace)
+            return json.dumps(
+                {
+                    "ok": True,
+                    "message": result.answer,
+                    "citations": [
+                        {
+                            "source_type": citation.source_type,
+                            "title": citation.title,
+                            "url": citation.url,
+                            "metadata": citation.metadata,
+                            "content": citation.content[:1500],
+                        }
+                        for citation in result.citations
+                    ],
+                }
+            ), result.citations
+
+        reasoning_trace.append(f"LLM requested unknown tool: {tool_name}")
+        return json.dumps({"ok": False, "message": f"Unknown tool {tool_name}."}), []
 
     @staticmethod
-    def _infer_action_request_deterministically(question: str) -> ActionRequest | None:
-        """Last-resort intent fallback for natural Jira workflow asks when LLM classification is unavailable."""
-        lowered = (question or "").lower()
-        issue_match = re.search(r"\b([A-Z][A-Z0-9_]+-\d+)\b", question or "", re.IGNORECASE)
-        if not issue_match:
-            return None
-        if not any(token in lowered for token in ("plan", "script", "result", "results", "k6", "performance", "test")):
-            return None
-        if not any(token in lowered for token in ("generate", "create", "build", "run", "get", "execute")):
-            return None
-        return ActionRequest(
-            operation="run",
-            target_system="jira",
-            target_type="workflow",
-            identifier=issue_match.group(1).upper(),
-            fields={},
-        )
+    def _has_tool_response(response: LLMToolResponse) -> bool:
+        """Return whether the LLM returned any tool calls."""
+        return bool(response.tool_calls)
 
     def _collect_evidence(
         self,
@@ -280,6 +321,28 @@ class BuildAgents:
         return evidence
 
     @staticmethod
+    def _expand_retrieval_question(
+        question: str,
+        last_reference: SearchDocument | None,
+    ) -> str:
+        """Thin fallback-only follow-up expansion using the last cited document."""
+        if last_reference is None or not re.search(r"\b(it|this|that|its|their|them|they|one|table|ticket|page)\b", question, re.IGNORECASE):
+            return question
+
+        reference_terms = [
+            last_reference.source_type,
+            last_reference.title.strip(),
+            str(last_reference.metadata.get("key", "")).strip(),
+            str(last_reference.metadata.get("id", "")).strip(),
+            str(last_reference.metadata.get("table_name", "")).strip(),
+            str(last_reference.metadata.get("table_text", "")).strip(),
+        ]
+        suffix = " ".join(term for term in reference_terms if term)
+        if not suffix:
+            return question
+        return f"{question} about {suffix}".strip()
+
+    @staticmethod
     def _deduplicate(documents: list[SearchDocument]) -> list[SearchDocument]:
         """Remove repeated documents that resolve to the same backing URL."""
         seen: set[str] = set()
@@ -295,22 +358,48 @@ class BuildAgents:
     @staticmethod
     def _rank(question: str, documents: list[SearchDocument]) -> list[SearchDocument]:
         """Rank by term overlap first, then prefer documents with more content."""
+        explicit_table = ""
+        for document in documents:
+            table_name = str(document.metadata.get("table_name", "")).strip()
+            if table_name and table_name.lower() in (question or "").lower():
+                explicit_table = table_name.upper()
+                break
+
         if documents and all(
             document.source_type == "as400" and document.metadata.get("source_kind") == "table_catalog"
             for document in documents
         ):
+            if explicit_table:
+                prioritized = sorted(
+                    documents,
+                    key=lambda document: (
+                        str(document.metadata.get("table_name", "")).upper() == explicit_table,
+                        len(document.content),
+                    ),
+                    reverse=True,
+                )
+                return prioritized
             return documents
 
         terms = set(re.findall(r"[a-zA-Z0-9_]+", question.lower()))
         if not terms:
             return documents
+        explicit_jira_key_match = re.search(r"\b([A-Z][A-Z0-9_]+-\d+)\b", question or "", re.IGNORECASE)
+        explicit_jira_key = explicit_jira_key_match.group(1).upper() if explicit_jira_key_match else ""
 
-        def score(document: SearchDocument) -> tuple[float, int]:
+        def score(document: SearchDocument) -> tuple[float, int, int]:
             searchable = " ".join(
                 [document.title, document.content, str(document.metadata)]
             ).lower()
             overlap = sum(1 for term in terms if term in searchable)
-            return (overlap / len(terms), len(document.content))
+            explicit_key_boost = 0
+            if (
+                explicit_jira_key
+                and document.source_type == "jira"
+                and str(document.metadata.get("key", "")).upper() == explicit_jira_key
+            ):
+                explicit_key_boost = 1
+            return (explicit_key_boost, overlap / len(terms), len(document.content))
 
         return sorted(documents, key=score, reverse=True)
 
@@ -373,14 +462,158 @@ class BuildAgents:
 def format_slack_response(result: AgentAnswer) -> str:
     """Render the final answer as a Slack-friendly message with citations."""
     visible_citations = _visible_citations(result.citations)
+    answer = _clean_slack_answer(result.answer, visible_citations)
     citations = [
         f"{index}. [{citation.source_type}] {citation.title} - {citation.url}"
         for index, citation in enumerate(visible_citations, start=1)
     ]
     if not citations:
-        return result.answer
+        return answer
     citation_block = "\n".join(citations)
-    return f"{result.answer}\n\nSources:\n{citation_block}"
+    return f"{answer}\n\nSources:\n{citation_block}"
+
+
+def _clean_slack_answer(answer: str, citations: list[SearchDocument]) -> str:
+    """Turn raw fallback evidence dumps into a cleaner Slack-facing summary."""
+    text = (answer or "").strip()
+    if "I found relevant evidence and summarized it below." not in text:
+        return text
+
+    task_answer = _task_oriented_answer(citations)
+    if task_answer:
+        return task_answer
+
+    direct_summary = _primary_citation_summary(citations)
+    if direct_summary:
+        return direct_summary
+
+    suggestions = _suggest_options_from_citations(citations)
+    if suggestions:
+        suggestion_lines = "\n".join(f"- {item}" for item in suggestions)
+        return (
+            "I found a few likely options based on the retrieved docs.\n\n"
+            f"{suggestion_lines}\n\n"
+            "If you want, I can also narrow this down to the best single command for your exact use case."
+        )
+
+    summary_lines: list[str] = []
+    for citation in citations[:3]:
+        line = f"- [{citation.source_type}] {citation.title}"
+        preview = _citation_preview(citation)
+        if preview:
+            line += f": {preview}"
+        summary_lines.append(line)
+    if summary_lines:
+        return "I found relevant references and shortlisted the most useful ones:\n\n" + "\n".join(summary_lines)
+    return text
+
+
+def _suggest_options_from_citations(citations: list[SearchDocument]) -> list[str]:
+    """Extract a few command-like options from citation content for Slack replies."""
+    options: list[str] = []
+    seen: set[str] = set()
+    for citation in citations:
+        if citation.source_type == "jira":
+            continue
+        matches = re.findall(r"\b[A-Z]{3,12}[A-Z0-9_]{0,4}\b", citation.content or "")
+        for match in matches:
+            if match in seen:
+                continue
+            seen.add(match)
+            options.append(f"`{match}` from {citation.title}")
+            if len(options) >= 4:
+                return options
+    return options
+
+
+def _task_oriented_answer(citations: list[SearchDocument]) -> str:
+    """Turn raw evidence into a short task answer when the source clearly contains command guidance."""
+    if not citations:
+        return ""
+
+    first = citations[0]
+    cleaned = _clean_citation_content(first.content or "")
+    plain_preview = str(first.metadata.get("plain_text_preview", "") or "").strip()
+    combined = " ".join(part for part in [first.title, plain_preview, cleaned] if part)
+
+    if first.source_type == "jira":
+        jira_text = _clean_text_noise(combined)
+        lines = jira_text.split(": ", 1)
+        title = first.title.strip()
+        description = jira_text
+        if len(description) > 420:
+            description = description[:420].rstrip() + "..."
+        return f"{title}\n\n{description}"
+
+    commands = []
+    seen: set[str] = set()
+    for match in re.findall(r"\b[A-Z]{3,12}[A-Z0-9_]{0,4}\b", combined):
+        if match in seen:
+            continue
+        if not match.startswith(("WRK", "DSP", "SBM", "END", "STR", "CHG", "CPY", "RTV", "CRT", "DLT")):
+            continue
+        seen.add(match)
+        commands.append(match)
+        if len(commands) >= 4:
+            break
+
+    if not commands:
+        return ""
+
+    best = commands[0]
+    alternatives = commands[1:3]
+    answer = f"最相关的命令是 `{best}`。"
+    if alternatives:
+        answer += " 备选还有 " + "、".join(f"`{item}`" for item in alternatives) + "。"
+    if plain_preview:
+        answer += f"\n\n依据: {_clean_text_noise(plain_preview)[:220].rstrip()}..."
+    return answer
+
+
+def _primary_citation_summary(citations: list[SearchDocument]) -> str:
+    """Build a generic direct answer from the top citation when fallback dumped raw evidence."""
+    if not citations:
+        return ""
+    first = citations[0]
+    title = first.title.strip()
+    preview = _citation_preview(first, limit=260)
+    key = str(first.metadata.get("key", "")).strip()
+    identifier = key or str(first.metadata.get("id", "")).strip()
+
+    header = title
+    if identifier and identifier not in title:
+        header = f"{identifier} - {title}"
+    if preview:
+        return f"{header}\n\n{preview}"
+    return header
+
+
+def _citation_preview(citation: SearchDocument, limit: int = 140) -> str:
+    """Build a short one-line preview for Slack."""
+    preferred_preview = str(citation.metadata.get("plain_text_preview", "") or "").strip()
+    content = preferred_preview or _clean_citation_content(citation.content or "")
+    content = re.sub(r"\s+", " ", content).strip()
+    if not content:
+        return ""
+    return content[:limit].rstrip() + ("..." if len(content) > limit else "")
+
+
+def _clean_citation_content(content: str) -> str:
+    """Normalize rich source content into readable plain text for Slack/CLI previews."""
+    text = (content or "").strip()
+    if not text:
+        return ""
+    if "<" in text and ">" in text:
+        text = _strip_html(text)
+    return _fix_mojibake(text)
+
+
+def _clean_text_noise(text: str) -> str:
+    """Remove a few common rendering artifacts from downstream answer text."""
+    normalized = _fix_mojibake(text or "").replace("??", "").replace("鈩?", "").replace("�", "")
+    normalized = re.sub(r"\bwide\s+\d+\b", "", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized
 
 
 def _visible_citations(citations: list[SearchDocument]) -> list[SearchDocument]:

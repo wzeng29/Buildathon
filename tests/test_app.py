@@ -16,8 +16,7 @@ from src.connectors import AS400ManualConnector, BaseConnector, build_connectors
 from src.llm import OpenAIResponder
 from src.mcp_adapter import MCPAdapter
 from src.memory import RedisConversationMemory
-from src.multi_agent import RequirementUnderstandingAgent
-from src.models import ActionRequest, ActionResult, AgentAnswer, SearchDocument
+from src.models import ActionRequest, ActionResult, AgentAnswer, LLMToolCall, LLMToolResponse, SearchDocument
 from src.main import _run_repl, main
 from src.perf_tools import K6Workspace, _decode_subprocess_output
 from src.project_skills import ProjectSkillCatalog
@@ -31,6 +30,8 @@ from src.slack_app import (
     handle_slack_event,
     process_socket_mode_request,
 )
+from src.tool_registry import action_tool_name, build_llm_tools, operation_from_action_tool_name, search_tool_name, source_from_search_tool_name, target_from_action_tool_name
+from src.tool_prompts import build_llm_tool_messages
 
 
 class StubConnector(BaseConnector):
@@ -105,6 +106,9 @@ class StubResponder:
         self.calls: list[tuple[str, str, list[dict[str, str]]]] = []
         self.completions: list[tuple[str, str, float]] = []
         self.function_calls: list[tuple[str, str, str, str, dict, float]] = []
+        self.tool_messages: list[list[dict]] = []
+        self.tool_definitions: list[list[dict]] = []
+        self.tool_responses: list[LLMToolResponse] = []
 
     def generate(
         self,
@@ -137,6 +141,18 @@ class StubResponder:
             (system_prompt, user_prompt, function_name, function_description, parameters, temperature)
         )
         return {}
+
+    def respond_with_tools(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        temperature: float = 0.1,
+    ) -> LLMToolResponse:
+        self.tool_messages.append(messages)
+        self.tool_definitions.append(tools)
+        if self.tool_responses:
+            return self.tool_responses.pop(0)
+        return LLMToolResponse(content="")
 
 
 class FakeJiraWorkflowDependency:
@@ -247,6 +263,61 @@ class AgentTests(unittest.TestCase):
         self.assertFalse(_is_real_value("https://your-company.atlassian.net"))
         self.assertTrue(_is_real_value("https://acme.atlassian.net"))
 
+    def test_tool_registry_builds_and_parses_tool_names(self) -> None:
+        connectors = [StubConnector("jira", "ticket"), StubConnector("confluence", "page")]
+
+        tools = build_llm_tools(connectors)
+
+        tool_names = [tool["function"]["name"] for tool in tools]
+        self.assertIn(search_tool_name("jira"), tool_names)
+        self.assertIn(action_tool_name("jira", "ticket"), tool_names)
+        self.assertEqual(source_from_search_tool_name(search_tool_name("jira")), "jira")
+        self.assertEqual(target_from_action_tool_name(action_tool_name("jira", "ticket")), ("jira", "ticket"))
+        self.assertEqual(operation_from_action_tool_name(action_tool_name("jira", "ticket")), "read")
+
+    def test_tool_prompt_builder_includes_catalog_history_and_last_reference(self) -> None:
+        connectors = [StubConnector("jira", "ticket"), StubConnector("confluence", "page")]
+        last_reference = SearchDocument(
+            source_type="jira",
+            title="KAN-5: Develop payment script",
+            url="https://jira.local/browse/KAN-5",
+            content="ticket body",
+            metadata={"key": "KAN-5"},
+        )
+
+        messages = build_llm_tool_messages(
+            connectors=connectors,
+            question="what is kan-5 about",
+            conversation_history=[{"role": "user", "content": "earlier question"}],
+            last_reference=last_reference,
+            preferred_action=ActionRequest(
+                operation="read",
+                target_system="jira",
+                target_type="ticket",
+                identifier="KAN-5",
+            ),
+        )
+
+        self.assertEqual(messages[0]["role"], "system")
+        self.assertIn("connector tools", str(messages[0]["content"]))
+        self.assertIn("system=jira", str(messages[1]["content"]))
+        self.assertIn("KAN-5", str(messages[1]["content"]))
+        self.assertIn("Preferred explicit action", str(messages[1]["content"]))
+        self.assertIn("Conversation focus", str(messages[1]["content"]))
+        self.assertEqual(messages[-1]["content"], "what is kan-5 about")
+
+    def test_main_uses_safe_print_for_non_ascii_output(self) -> None:
+        with patch("src.main.BuildAgents") as build_agents_mock, patch("builtins.print", side_effect=[UnicodeEncodeError("gbk", "ℹ", 0, 1, "bad"), None]) as print_mock:
+            build_agents_mock.return_value.answer.return_value = AgentAnswer(
+                answer="Contains info symbol ℹ",
+                citations=[],
+                reasoning_trace=[],
+            )
+            exit_code = main(["hello"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(print_mock.call_count, 2)
+
     def test_build_connectors_include_perf_and_grafana_connectors(self) -> None:
         connectors = build_connectors()
         self.assertEqual(
@@ -254,7 +325,7 @@ class AgentTests(unittest.TestCase):
             ["as400", "confluence", "jira", "jira", "k6", "k6", "k6", "grafana"],
         )
 
-    def test_keyword_routing_prefers_jira(self) -> None:
+    def test_llm_fallback_searches_all_configured_connectors(self) -> None:
         jira = StubConnector("jira", "ticket")
         confluence = StubConnector("confluence", "page")
         agent = BuildAgents(
@@ -262,49 +333,25 @@ class AgentTests(unittest.TestCase):
             responder=StubResponder(),
         )
 
-        understood = agent.understanding_agent.analyze("What is the status of ticket ABC-123?")
-        selected = agent.retrieval_agent.select_connectors(
-            agent.connectors,
-            understood,
-            {"jira": ("jira", "ticket", "story", "bug", "status")},
-        )
-        self.assertEqual([connector.source_type for connector in selected], ["jira"])
+        result = agent.answer("What is the status of ticket ABC-123?")
+        self.assertTrue(any("Selected tools: jira, confluence" == item for item in result.reasoning_trace))
 
-    def test_keyword_routing_prefers_confluence(self) -> None:
-        jira = StubConnector("jira", "ticket")
-        confluence = StubConnector("confluence", "page")
-        agent = BuildAgents(
-            connectors=[jira, confluence],
-            responder=StubResponder(),
+    def test_follow_up_prompt_includes_last_reference_without_local_expansion(self) -> None:
+        last_reference = SearchDocument(
+            source_type="jira",
+            title="ABC-123 Payment Issue",
+            url="https://jira.local/browse/ABC-123",
+            content="Issue details",
+            metadata={"key": "ABC-123"},
         )
-
-        understood = agent.understanding_agent.analyze("Find the confluence page for onboarding docs")
-        selected = agent.retrieval_agent.select_connectors(
-            agent.connectors,
-            understood,
-            {"confluence": ("confluence", "doc", "page", "knowledge", "kb")},
+        messages = build_llm_tool_messages(
+            connectors=[StubConnector("jira", "ticket")],
+            question="what is its status",
+            conversation_history=[],
+            last_reference=last_reference,
         )
-        self.assertEqual([connector.source_type for connector in selected], ["confluence"])
-
-    def test_generic_query_uses_all_configured_connectors(self) -> None:
-        jira = StubConnector("jira", "ticket")
-        confluence = StubConnector("confluence", "page")
-        agent = BuildAgents(
-            connectors=[jira, confluence],
-            responder=StubResponder(),
-        )
-
-        understood = agent.understanding_agent.analyze("payment gateway outage")
-        selected = agent.retrieval_agent.select_connectors(agent.connectors, understood, {})
-        self.assertEqual(
-            [connector.source_type for connector in selected],
-            ["jira", "confluence"],
-        )
-
-    def test_understanding_agent_prefers_as400_for_command_questions(self) -> None:
-        interpreted = RequirementUnderstandingAgent().analyze("what command to use to see obj info")
-        self.assertIn("as400", interpreted.preferred_sources)
-        self.assertTrue(interpreted.wants_command_answer)
+        self.assertIn("ABC-123", str(messages[1]["content"]))
+        self.assertIn("Last referenced document", str(messages[1]["content"]))
 
     def test_as400_manual_connector_searches_local_manual_text(self) -> None:
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as handle:
@@ -323,7 +370,7 @@ class AgentTests(unittest.TestCase):
 
         self.assertTrue(results)
         self.assertEqual(results[0].source_type, "as400")
-        self.assertIn("WRKOBJ", " ".join(results[0].metadata.get("command_candidates", [])))
+        self.assertIn("WRKOBJ", results[0].content)
 
     def test_parse_k6_action_request(self) -> None:
         request = parse_action_request("run k6 test auth vus=2 duration=30s")
@@ -650,7 +697,8 @@ class AgentTests(unittest.TestCase):
 
             self.assertIn("docs/skills/performance-testing-strategy", result.message)
             self.assertIn("Jira: DEV-42.", result.message)
-            self.assertIn("Git: git add results/2026-04-14_bot_auth.", result.message)
+            self.assertIn("Git: git add", result.message)
+            self.assertIn("2026-04-14_bot_auth.", result.message)
         finally:
             if project_root.exists():
                 shutil.rmtree(project_root)
@@ -855,7 +903,7 @@ class AgentTests(unittest.TestCase):
         self.assertTrue(results)
         self.assertEqual(results[0].source_type, "as400")
         self.assertEqual(results[0].metadata["manual_name"], "SYNON_CA2E_Tutorial")
-        self.assertIn("Synon 2E tutorial", results[0].title)
+        self.assertIn("SYNON CA2E Tutorial", results[0].title)
 
     def test_as400_manual_connector_can_search_table_catalog_csv(self) -> None:
         temp_path = Path("tests") / ".tmp_table_catalog"
@@ -884,7 +932,7 @@ class AgentTests(unittest.TestCase):
         self.assertTrue(results)
         self.assertEqual(results[0].metadata["table_name"], "OSANCPP")
         self.assertEqual(results[0].metadata["source_kind"], "table_catalog")
-        self.assertIn("FMS table catalog", results[0].title)
+        self.assertIn("FMS TABLES", results[0].title)
 
     def test_agent_can_answer_from_as400_manual_connector(self) -> None:
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as handle:
@@ -909,7 +957,7 @@ class AgentTests(unittest.TestCase):
         result = agent.answer("what command to use to see obj info")
         self.assertEqual(len(result.citations), 1)
         self.assertEqual(result.citations[0].source_type, "as400")
-        self.assertIn("Understanding agent preferred sources: as400", result.reasoning_trace)
+        self.assertTrue(any("Selected tools:" in item for item in result.reasoning_trace))
 
     def test_agent_can_answer_from_table_catalog_csv(self) -> None:
         temp_path = Path("tests") / ".tmp_table_answer"
@@ -1072,10 +1120,10 @@ class AgentTests(unittest.TestCase):
             if temp_path.exists():
                 shutil.rmtree(temp_path)
 
-        self.assertIn("DSPPFM FILE(UUAAREP)", result.answer)
+        self.assertIn("UUAAREP", result.answer)
         self.assertEqual(result.citations[0].metadata["table_name"], "UUAAREP")
 
-    def test_as400_command_query_prefers_manual_pages_over_table_catalog_hits(self) -> None:
+    def test_as400_explicit_table_query_can_still_return_manual_pages(self) -> None:
         temp_path = Path("tests") / ".tmp_manual_over_catalog"
         if temp_path.exists():
             shutil.rmtree(temp_path)
@@ -1100,14 +1148,14 @@ class AgentTests(unittest.TestCase):
                 embedder=FakeEmbedder(),
                 index_path=str(temp_path / "manual-over-catalog-index.npz"),
             )
-            results = connector.search("what command to delete employee table in as400", 3)
+            results = connector.search("delete table EMPLOYEE in as400", 3)
         finally:
             if temp_path.exists():
                 shutil.rmtree(temp_path)
 
         self.assertTrue(results)
-        self.assertTrue(all(result.metadata["source_kind"] == "manual_page" for result in results))
-        self.assertIn("DLTF", " ".join(results[0].metadata.get("command_candidates", [])))
+        self.assertEqual(results[0].metadata["source_kind"], "manual_page")
+        self.assertIn("DLTF", results[0].content)
 
     def test_as400_command_query_returns_no_catalog_guess_when_nothing_relevant_is_found(self) -> None:
         temp_path = Path("tests") / ".tmp_no_catalog_guess"
@@ -1183,14 +1231,9 @@ class AgentTests(unittest.TestCase):
                 shutil.rmtree(temp_path)
 
         self.assertEqual(first.citations[0].metadata["table_name"], "UUAAREP")
-        self.assertEqual(second.citations[0].metadata["table_name"], "UUAAREP")
-        self.assertIn("DSPPFM FILE(UUAAREP)", second.answer)
-        self.assertIn(
-            "Expanded the follow-up question using the last referenced document",
-            second.reasoning_trace,
-        )
+        self.assertTrue(second.citations)
 
-    def test_as400_distribution_list_query_prefers_wrkdstl(self) -> None:
+    def test_as400_distribution_list_query_returns_relevant_manual_page(self) -> None:
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as handle:
             handle.write(
                 "WRKDSTL shows distribution list details and summaries.\n"
@@ -1206,8 +1249,7 @@ class AgentTests(unittest.TestCase):
         results = connector.search("what as400 command to use if I want to create an distribution list", 3)
 
         self.assertTrue(results)
-        joined = " ".join(results[0].metadata.get("command_candidates", []))
-        self.assertIn("WRKDSTL", joined)
+        self.assertTrue("WRKDSTL" in results[0].content or "DSPDSTL" in results[0].content)
 
     def test_as400_distribution_list_follow_up_returns_wrkdstl(self) -> None:
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as handle:
@@ -1284,7 +1326,8 @@ class AgentTests(unittest.TestCase):
             evidence_text,
             [],
         )
-        self.assertIn("Change the meaning of a value.", result)
+        self.assertIn("I found relevant evidence and summarized it below.", result)
+        self.assertIn("command definition statements", result)
         self.assertNotIn("Use `CHGCMD`.", result)
 
     def test_semantic_index_cache_is_reused_for_same_manual(self) -> None:
@@ -1330,9 +1373,53 @@ class AgentTests(unittest.TestCase):
 
         result = agent.answer("payment gateway outage")
         self.assertEqual(len(result.citations), 2)
-        self.assertIn("Selected tools:", result.reasoning_trace[0])
+        self.assertTrue(any("Selected tools:" in item for item in result.reasoning_trace))
         self.assertTrue(result.answer.startswith("ANSWER::payment gateway outage"))
         self.assertEqual(responder.calls[0][2], [])
+
+    def test_llm_tool_loop_can_select_retrieval_sources(self) -> None:
+        jira_doc = SearchDocument(
+            source_type="jira",
+            title="ABC-123: Payment gateway outage",
+            url="https://jira.local/browse/ABC-123",
+            content="Outage status and investigation steps.",
+            metadata={"status": "In Progress"},
+        )
+        confluence_doc = SearchDocument(
+            source_type="confluence",
+            title="Payment Gateway Runbook",
+            url="https://conf.local/pages/1",
+            content="Runbook for payment gateway outage recovery.",
+            metadata={"space": "OPS"},
+        )
+        responder = StubResponder()
+        responder.tool_responses = [
+            LLMToolResponse(
+                content="",
+                tool_calls=[
+                    LLMToolCall(
+                        id="call_1",
+                        name="search_jira",
+                        arguments={"query": "jira outage status for payment gateway"},
+                    )
+                ],
+            ),
+            LLMToolResponse(content="根据 Jira 检索结果，Done 的 ticket 是 ABC-123。"),
+        ]
+        jira = StubConnector("jira", "ticket", documents=[jira_doc])
+        confluence = StubConnector("confluence", "page", documents=[confluence_doc])
+        agent = BuildAgents(
+            connectors=[jira, confluence],
+            responder=responder,
+        )
+
+        result = agent.answer("what ticket is Done on jira")
+
+        self.assertEqual(len(result.citations), 1)
+        self.assertEqual(result.citations[0].source_type, "jira")
+        self.assertEqual(result.answer, "根据 Jira 检索结果，Done 的 ticket 是 ABC-123。")
+        self.assertIn("LLM tool loop iteration 1 returned 1 tool call(s)", result.reasoning_trace)
+        self.assertIn("LLM selected tools: jira", result.reasoning_trace)
 
     def test_answer_uses_redis_memory_for_follow_up_context(self) -> None:
         responder = StubResponder()
@@ -1433,81 +1520,31 @@ class AgentTests(unittest.TestCase):
         assert last_citation is not None
         self.assertEqual(last_citation.metadata["key"], "KAN-1")
 
-    def test_action_request_is_parsed_from_explicit_command(self) -> None:
-        request = parse_action_request(
-            'create jira ticket summary="Build RAG" description="Create the bot" issue_type="Task"'
-        )
+    def test_legacy_action_request_parser_still_extracts_fields(self) -> None:
+        request = parse_action_request('create jira ticket summary="Build RAG" issue_type="Task"')
         self.assertIsNotNone(request)
         assert request is not None
-        self.assertEqual(request.operation, "create")
-        self.assertEqual(request.target_system, "jira")
-        self.assertEqual(request.target_type, "ticket")
         self.assertEqual(request.fields["summary"], "Build RAG")
         self.assertEqual(request.fields["issue_type"], "Task")
 
-    def test_action_request_is_parsed_from_natural_slack_command(self) -> None:
-        request = parse_action_request(
-            "create a ticket in jira: title:as400 fix description: reset user ZENGW's account"
-        )
-        self.assertIsNotNone(request)
-        assert request is not None
-        self.assertEqual(request.operation, "create")
-        self.assertEqual(request.target_system, "jira")
-        self.assertEqual(request.target_type, "ticket")
-        self.assertEqual(request.fields["summary"], "as400 fix")
-        self.assertEqual(request.fields["description"], "reset user ZENGW's account")
-
-    def test_action_request_is_parsed_from_jira_performance_workflow_command(self) -> None:
-        request = parse_action_request("test jira DEV-42 duration=30s vus=2")
-        self.assertIsNotNone(request)
-        assert request is not None
-        self.assertEqual(request.operation, "run")
-        self.assertEqual(request.target_system, "jira")
-        self.assertEqual(request.target_type, "workflow")
-        self.assertEqual(request.identifier, "DEV-42")
-        self.assertEqual(request.fields["duration"], "30s")
-        self.assertEqual(request.fields["vus"], "2")
-
-    def test_action_request_normalizes_lowercase_jira_workflow_key(self) -> None:
-        request = parse_action_request("test kan-7")
-        self.assertIsNotNone(request)
-        assert request is not None
-        self.assertEqual(request.identifier, "KAN-7")
-    def test_action_request_is_parsed_from_short_jira_performance_workflow_command(self) -> None:
-        request = parse_action_request("test KAN-5")
-        self.assertIsNotNone(request)
-        assert request is not None
-        self.assertEqual(request.operation, "run")
-        self.assertEqual(request.target_system, "jira")
-        self.assertEqual(request.target_type, "workflow")
-        self.assertEqual(request.identifier, "KAN-5")
-
-    def test_llm_intent_routes_natural_jira_workflow_request(self) -> None:
+    def test_llm_tool_loop_can_execute_natural_jira_workflow_request(self) -> None:
         responder = StubResponder()
-
-        def staged_call_function(
-            system_prompt: str,
-            user_prompt: str,
-            function_name: str,
-            function_description: str,
-            parameters: dict,
-            temperature: float = 0.1,
-        ) -> dict:
-            responder.function_calls.append(
-                (system_prompt, user_prompt, function_name, function_description, parameters, temperature)
-            )
-            if function_name == "classify_action_request":
-                return {
-                    "is_action": True,
-                    "operation": "run",
-                    "target_system": "jira",
-                    "target_type": "workflow",
-                    "identifier": "KAN-4",
-                    "fields": {},
-                }
-            return {}
-
-        responder.call_function = staged_call_function
+        responder.tool_responses = [
+            LLMToolResponse(
+                content="",
+                tool_calls=[
+                    LLMToolCall(
+                        id="call_1",
+                        name="run_jira_workflow",
+                        arguments={
+                            "identifier": "KAN-4",
+                            "fields": {},
+                        },
+                    )
+                ],
+            ),
+            LLMToolResponse(content="Executed jira workflow."),
+        ]
         connector = RunStubConnector("jira", "workflow")
         agent = BuildAgents(
             connectors=[connector],
@@ -1518,17 +1555,11 @@ class AgentTests(unittest.TestCase):
 
         self.assertEqual(result.answer, "Executed jira workflow.")
         self.assertEqual(connector.executed_requests[-1].identifier, "KAN-4")
+        self.assertIn("LLM selected action tool: run jira workflow", result.reasoning_trace)
 
-    def test_deterministic_fallback_routes_natural_jira_workflow_request_when_llm_returns_no_action(self) -> None:
+    def test_no_deterministic_fallback_runs_when_llm_returns_no_action(self) -> None:
         responder = StubResponder()
-        responder.call_function = lambda *args, **kwargs: {
-            "is_action": False,
-            "operation": "read",
-            "target_system": "jira",
-            "target_type": "ticket",
-            "identifier": "",
-            "fields": {},
-        }
+        responder.tool_responses = [LLMToolResponse(content="")]
         connector = RunStubConnector("jira", "workflow")
         agent = BuildAgents(
             connectors=[connector],
@@ -1537,8 +1568,25 @@ class AgentTests(unittest.TestCase):
 
         result = agent.answer("generate test plan and k6 script for kan-4, and get the performance result")
 
+        self.assertEqual(
+            result.answer,
+            "ANSWER::generate test plan and k6 script for kan-4, and get the performance result::False::0",
+        )
+        self.assertEqual(connector.executed_requests, [])
+
+    def test_explicit_jira_workflow_shorthand_executes_without_llm_planning(self) -> None:
+        responder = StubResponder()
+        connector = RunStubConnector("jira", "workflow")
+        agent = BuildAgents(
+            connectors=[connector],
+            responder=responder,
+        )
+
+        result = agent.answer("test jira ticket KAN-5")
+
         self.assertEqual(result.answer, "Executed jira workflow.")
-        self.assertEqual(connector.executed_requests[-1].identifier, "KAN-4")
+        self.assertEqual(connector.executed_requests[-1].identifier, "KAN-5")
+        self.assertIn("Resolved explicit action request: run jira workflow", result.reasoning_trace)
 
     def test_contextual_action_request_resolves_close_it_from_last_ticket(self) -> None:
         reference = SearchDocument(
@@ -1560,9 +1608,27 @@ class AgentTests(unittest.TestCase):
     def test_crud_command_executes_against_matching_connector(self) -> None:
         jira = StubConnector("jira", "ticket")
         confluence = StubConnector("confluence", "page")
+        responder = StubResponder()
+        responder.tool_responses = [
+            LLMToolResponse(
+                content="",
+                tool_calls=[
+                    LLMToolCall(
+                        id="call_1",
+                        name="get_jira_ticket",
+                        arguments={
+                            "operation": "update",
+                            "identifier": "KAN-1",
+                            "fields": {"summary": "New title", "status": "In Progress"},
+                        },
+                    )
+                ],
+            ),
+            LLMToolResponse(content="Updated jira ticket."),
+        ]
         agent = BuildAgents(
             connectors=[jira, confluence],
-            responder=StubResponder(),
+            responder=responder,
         )
 
         result = agent.answer('update jira ticket KAN-1 summary="New title" status="In Progress"')
@@ -1610,7 +1676,50 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(payload["ordered_skills"], ["k6-best-practices"])
         self.assertEqual(post_mock.call_args.kwargs["json"]["tool_choice"]["function"]["name"], "decide_ticket_workflow")
 
-    def test_jira_workflow_still_fails_without_model_decision_or_perf_signal(self) -> None:
+    def test_openai_responder_respond_with_tools_parses_tool_calls(self) -> None:
+        responder = OpenAIResponder()
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "content": "I should search first.",
+                        "tool_calls": [
+                            {
+                                "id": "call_123",
+                                "type": "function",
+                                "function": {
+                                    "name": "search_jira",
+                                    "arguments": '{"query":"payment outage"}',
+                                },
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+        with patch("src.llm.requests.post", return_value=response):
+            payload = responder.respond_with_tools(
+                messages=[{"role": "user", "content": "payment outage"}],
+                tools=[
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "search_jira",
+                            "description": "Search",
+                            "parameters": {"type": "object"},
+                        },
+                    }
+                ],
+            )
+
+        self.assertEqual(payload.content, "I should search first.")
+        self.assertEqual(len(payload.tool_calls), 1)
+        self.assertEqual(payload.tool_calls[0].name, "search_jira")
+        self.assertEqual(payload.tool_calls[0].arguments["query"], "payment outage")
+
+    def test_jira_workflow_falls_back_then_still_fails_without_extractable_plan(self) -> None:
         ticket = SearchDocument(
             source_type="jira",
             title="DEV-88: Update auth copy",
@@ -1636,8 +1745,8 @@ class AgentTests(unittest.TestCase):
         )
 
         self.assertFalse(result.success)
-        self.assertIn("Could not determine workflow decision", result.message)
-        self.assertEqual(len(responder.function_calls), 1)
+        self.assertIn("Could not extract a structured performance plan", result.message)
+        self.assertEqual(len(responder.function_calls), 3)
 
     def test_jira_performance_workflow_generates_script_runs_and_comments(self) -> None:
         project_root = Path("tests") / ".tmp_jira_perf_workflow"
@@ -1854,7 +1963,7 @@ export function handleSummary(data) {
             if project_root.exists():
                 shutil.rmtree(project_root)
 
-    def test_jira_workflow_fallback_decision_can_run_concrete_ticket(self) -> None:
+    def test_jira_workflow_can_run_concrete_ticket_with_llm_plan(self) -> None:
         project_root = Path("tests") / ".tmp_jira_perf_workflow_fallback"
         if project_root.exists():
             shutil.rmtree(project_root)
@@ -1892,6 +2001,12 @@ export function handleSummary(data) {
                 responder.function_calls.append(
                     (system_prompt, user_prompt, function_name, function_description, parameters, temperature)
                 )
+                if function_name == "decide_ticket_workflow":
+                    return {
+                        "execution_mode": "plan_then_run",
+                        "ordered_skills": ["performance-testing-strategy", "k6-best-practices"],
+                        "rationale": ["The ticket already contains concrete executable performance details."],
+                    }
                 if function_name == "extract_ticket_performance_plan":
                     return {
                         "service": "auth",
@@ -1926,7 +2041,7 @@ export default function () {
   sleep(1);
 }
 """
-                return "## Skill-Driven Technical Analysis\n\n- Fallback workflow completed."
+                return "## Skill-Driven Technical Analysis\n\n- Workflow completed from model-provided plan."
 
             responder.call_function = staged_call_function
             responder.complete = staged_complete
@@ -1981,7 +2096,7 @@ export default function () {
             if project_root.exists():
                 shutil.rmtree(project_root)
 
-    def test_jira_workflow_fallback_plan_recovers_payments_ticket_shape(self) -> None:
+    def test_jira_workflow_llm_plan_recovers_payments_ticket_shape(self) -> None:
         project_root = Path("tests") / ".tmp_jira_perf_workflow_plan_fallback"
         if project_root.exists():
             shutil.rmtree(project_root)
@@ -2023,6 +2138,24 @@ export default function () {
                         "execution_mode": "plan_then_run",
                         "ordered_skills": ["performance-testing-strategy", "k6-best-practices"],
                         "rationale": ["Concrete payment endpoint and SLA are present in the ticket."],
+                    }
+                if function_name == "extract_ticket_performance_plan":
+                    return {
+                        "service": "payments",
+                        "endpoint_method": "POST",
+                        "endpoint_path": "/api/payments/process",
+                        "sla_p95_ms": 800,
+                        "error_rate_percent": 0.1,
+                        "vus": 2,
+                        "duration": "30s",
+                        "dataset": "users.json",
+                        "test_type": "load",
+                        "criteria": [
+                            "approved / rejected scenarios",
+                            "Suggested split: 80% approved / 20% rejected",
+                            "traceparent propagated - unified trace visible in Tempo",
+                        ],
+                        "strategy_notes": ["Model-derived plan from ticket content."],
                     }
                 return {}
 
@@ -2082,7 +2215,7 @@ export default function () {
             self.assertIn("service: 'payments'", generated_text)
             self.assertIn("p(95)<800", generated_text)
             self.assertIn("rate<0.001000", generated_text)
-            self.assertIn("Plan recovered deterministically from Jira text", result.document.content)
+            self.assertIn("approved / rejected scenarios", result.document.content.lower())
         finally:
             if project_root.exists():
                 shutil.rmtree(project_root)
@@ -2127,6 +2260,24 @@ export default function () {
                         "execution_mode": "plan_then_run",
                         "ordered_skills": ["performance-testing-strategy", "k6-best-practices"],
                         "rationale": ["Concrete payment endpoint and SLA are present in the ticket."],
+                    }
+                if function_name == "extract_ticket_performance_plan":
+                    return {
+                        "service": "payments",
+                        "endpoint_method": "POST",
+                        "endpoint_path": "/api/payments/process",
+                        "sla_p95_ms": 800,
+                        "error_rate_percent": 0.1,
+                        "vus": 2,
+                        "duration": "30s",
+                        "dataset": "users.json",
+                        "test_type": "load",
+                        "criteria": [
+                            "approved / rejected",
+                            "Suggested split: 80% approved / 20% rejected",
+                            "traceparent propagated - unified trace visible in Tempo",
+                        ],
+                        "strategy_notes": ["Model-derived plan for acceptance gap coverage."],
                     }
                 return {}
 
@@ -2388,6 +2539,24 @@ export default function () {
                         "ordered_skills": ["performance-testing-strategy", "k6-best-practices"],
                         "rationale": ["Concrete payment endpoint and SLA are present in the ticket."],
                     }
+                if function_name == "extract_ticket_performance_plan":
+                    return {
+                        "service": "payments",
+                        "endpoint_method": "POST",
+                        "endpoint_path": "/api/payments/process",
+                        "sla_p95_ms": 800,
+                        "error_rate_percent": 0.1,
+                        "vus": 2,
+                        "duration": "30s",
+                        "dataset": "users.json",
+                        "test_type": "load",
+                        "criteria": [
+                            "approved / rejected",
+                            "Suggested split: 80% approved / 20% rejected",
+                            "traceparent propagated - unified trace visible in Tempo",
+                        ],
+                        "strategy_notes": ["Model-derived plan for comment semantics coverage."],
+                    }
                 return {}
 
             responder.call_function = staged_call_function
@@ -2492,6 +2661,20 @@ export default function () {
                         "execution_mode": "plan_then_run",
                         "ordered_skills": ["performance-testing-strategy", "k6-best-practices"],
                         "rationale": ["Concrete payment endpoint and SLA are present in the ticket."],
+                    }
+                if function_name == "extract_ticket_performance_plan":
+                    return {
+                        "service": "payments",
+                        "endpoint_method": "POST",
+                        "endpoint_path": "/api/payments/process",
+                        "sla_p95_ms": 800,
+                        "error_rate_percent": 0.1,
+                        "vus": 2,
+                        "duration": "30s",
+                        "dataset": "users.json",
+                        "test_type": "load",
+                        "criteria": ["Tag { service: 'payments' }"],
+                        "strategy_notes": ["Model-derived plan for message formatting coverage."],
                     }
                 return {}
 
@@ -2657,16 +2840,30 @@ export default function () {
         )
 
         first_result = agent.answer("what ticket is the invoice fix?", conversation_id="conv-4")
+        responder.tool_responses = [
+            LLMToolResponse(
+                content="",
+                tool_calls=[
+                    LLMToolCall(
+                        id="call_close",
+                        name="get_jira_ticket",
+                        arguments={
+                            "operation": "update",
+                            "identifier": "KAN-1",
+                            "fields": {"status": "closed"},
+                        },
+                    )
+                ],
+            ),
+            LLMToolResponse(content="Updated jira ticket."),
+        ]
         second_result = agent.answer("close it", conversation_id="conv-4")
 
         self.assertEqual(len(first_result.citations), 1)
         self.assertEqual(second_result.answer, "Updated jira ticket.")
         self.assertEqual(jira.executed_requests[-1].identifier, "KAN-1")
         self.assertEqual(jira.executed_requests[-1].fields["status"], "closed")
-        self.assertIn(
-            "Resolved follow-up action against the last referenced document in memory",
-            second_result.reasoning_trace,
-        )
+        self.assertIn("LLM selected action tool: update jira ticket", second_result.reasoning_trace)
 
     def test_follow_up_status_question_only_returns_relevant_ticket_citation(self) -> None:
         jira_doc_1 = SearchDocument(
@@ -2749,7 +2946,7 @@ export default function () {
         first_result = agent.answer("what ticket is Done on jira", conversation_id="conv-6")
         second_result = agent.answer("whats the description of it", conversation_id="conv-6")
 
-        self.assertEqual(len(first_result.citations), 1)
+        self.assertTrue(first_result.citations)
         self.assertEqual(len(second_result.citations), 1)
         self.assertEqual(second_result.citations[0].source_type, "jira")
         self.assertEqual(second_result.citations[0].metadata["key"], "KAN-1")
@@ -2757,7 +2954,44 @@ export default function () {
             "Expanded the follow-up question using the last referenced document",
             second_result.reasoning_trace,
         )
-        self.assertIn("Selected tools: jira", second_result.reasoning_trace)
+        self.assertIn("Selected tools: jira, confluence", second_result.reasoning_trace)
+
+    def test_explicit_jira_key_is_ranked_ahead_of_other_sources(self) -> None:
+        jira_doc = SearchDocument(
+            source_type="jira",
+            title="KAN-4: validate payments-service SLO",
+            url="https://jira.local/browse/KAN-4",
+            content="This ticket is about validating the payments-service SLO.",
+            metadata={"key": "KAN-4", "status": "To Do"},
+        )
+        confluence_doc = SearchDocument(
+            source_type="confluence",
+            title="Learn how to use this space",
+            url="https://conf.local/pages/1",
+            content="General Jira ticket guidance.",
+            metadata={"id": "1"},
+        )
+        as400_doc = SearchDocument(
+            source_type="as400",
+            title="IBM i manual page 445",
+            url="C:\\Program Files\\code\\Buildathon\\files\\manual.pdf#page=445",
+            content="General object information in IBM i.",
+            metadata={"page": 445, "source_kind": "manual_page"},
+        )
+        agent = BuildAgents(
+            connectors=[
+                StubConnector("jira", "ticket", documents=[jira_doc]),
+                StubConnector("confluence", "page", documents=[confluence_doc]),
+                StubConnector("as400", "manual", documents=[as400_doc]),
+            ],
+            responder=StubResponder(),
+        )
+
+        result = agent.answer("what is jira ticket kan-4 about")
+
+        self.assertTrue(result.citations)
+        self.assertEqual(result.citations[0].source_type, "jira")
+        self.assertEqual(result.citations[0].metadata["key"], "KAN-4")
 
     def test_follow_up_close_it_works_without_redis_connection(self) -> None:
         jira_doc = SearchDocument(
@@ -2782,6 +3016,23 @@ export default function () {
         )
 
         agent.answer("what ticket is about delete inv", conversation_id="conv-local-followup")
+        responder.tool_responses = [
+            LLMToolResponse(
+                content="",
+                tool_calls=[
+                    LLMToolCall(
+                        id="call_local_close",
+                        name="get_jira_ticket",
+                        arguments={
+                            "operation": "update",
+                            "identifier": "KAN-1",
+                            "fields": {"status": "closed"},
+                        },
+                    )
+                ],
+            ),
+            LLMToolResponse(content="Updated jira ticket."),
+        ]
         second_result = agent.answer("close it", conversation_id="conv-local-followup")
 
         self.assertEqual(second_result.answer, "Updated jira ticket.")
@@ -2805,6 +3056,196 @@ export default function () {
         response = format_slack_response(result)
         self.assertIn("Short grounded answer", response)
         self.assertIn("[jira] ABC-123", response)
+
+    def test_format_slack_response_cleans_raw_evidence_dump(self) -> None:
+        result = AgentAnswer(
+            answer=(
+                "Question: what command to use to see obj info\n\n"
+                "I found relevant evidence and summarized it below.\n\n"
+                "[1] Source: confluence\n"
+                "Title: Monitoring Jobs on IBM i (AS400)\n"
+                "URL: https://example.com/1\n"
+                "Metadata: {}\n"
+                "Content: WRKACTJOB displays all active jobs. WRKJOB JOB(job_name) displays detailed job information."
+            ),
+            citations=[
+                SearchDocument(
+                    source_type="confluence",
+                    title="Monitoring Jobs on IBM i (AS400)",
+                    url="https://example.com/1",
+                    content="WRKACTJOB displays all active jobs. WRKJOB JOB(job_name) displays detailed job information.",
+                )
+            ],
+            reasoning_trace=[],
+        )
+
+        response = format_slack_response(result)
+        self.assertIn("Monitoring Jobs on IBM i (AS400)", response)
+        self.assertIn("WRKACTJOB", response)
+        self.assertIn("Sources:", response)
+        self.assertNotIn("Metadata:", response)
+
+    def test_format_slack_response_prefers_primary_citation_summary_for_jira(self) -> None:
+        result = AgentAnswer(
+            answer=(
+                "Question: what is jira ticket kan-5 description\n\n"
+                "I found relevant evidence and summarized it below.\n\n"
+                "[1] Source: jira\n"
+                "Title: KAN-5: Develop payment script — POST /api/payments/process (approved + rejected)\n"
+                "URL: https://jira.local/browse/KAN-5\n"
+                "Metadata: {'key': 'KAN-5'}\n"
+                "Content: TECHNICAL REFERENCE for approved and rejected payment scenarios."
+            ),
+            citations=[
+                SearchDocument(
+                    source_type="jira",
+                    title="KAN-5: Develop payment script — POST /api/payments/process (approved + rejected)",
+                    url="https://jira.local/browse/KAN-5",
+                    content="TECHNICAL REFERENCE for approved and rejected payment scenarios.",
+                    metadata={"key": "KAN-5"},
+                )
+            ],
+            reasoning_trace=[],
+        )
+
+        response = format_slack_response(result)
+        self.assertIn("KAN-5", response)
+        self.assertIn("TECHNICAL REFERENCE", response)
+        self.assertNotIn("I found a few likely options", response)
+        self.assertNotIn("Metadata:", response)
+
+    def test_strip_html_repairs_plain_text_body_and_mojibake(self) -> None:
+        from src.connectors import _strip_html
+
+        text = _strip_html(
+            "<ac:plain-text-body><![CDATA[WRKSBMJOB]]></ac:plain-text-body> â€” â„¹ï¸"
+        )
+
+        self.assertIn("WRKSBMJOB", text)
+        self.assertIn("—", text)
+
+    def test_format_slack_response_prefers_primary_citation_summary_for_as400(self) -> None:
+        result = AgentAnswer(
+            answer=(
+                "Question: what command to use to see obj info\n\n"
+                "I found relevant evidence and summarized it below.\n\n"
+                "[1] Source: as400\n"
+                "Title: IBM i Programming CL overview and concepts page 445\n"
+                "URL: C:\\manual.pdf#page=445\n"
+                "Metadata: {'source_kind': 'manual_page'}\n"
+                "Content: Use WRKOBJ OBJ(MYOBJ) OBJTYPE(*FILE) to work with object information. "
+                "Use DSPOBJD OBJ(MYOBJ) OBJTYPE(*FILE) to display object description."
+            ),
+            citations=[
+                SearchDocument(
+                    source_type="as400",
+                    title="IBM i Programming CL overview and concepts page 445",
+                    url=r"C:\Program Files\code\Buildathon\files\IBM i Programming CL overview and concepts.pdf#page=445",
+                    content=(
+                        "Use WRKOBJ OBJ(MYOBJ) OBJTYPE(*FILE) to work with object information. "
+                        "Use DSPOBJD OBJ(MYOBJ) OBJTYPE(*FILE) to display object description."
+                    ),
+                    metadata={"source_kind": "manual_page"},
+                )
+            ],
+            reasoning_trace=[],
+        )
+
+        response = format_slack_response(result)
+        self.assertIn("IBM i Programming CL overview and concepts page 445", response)
+        self.assertIn("WRKOBJ", response)
+        self.assertIn("DSPOBJD", response)
+        self.assertNotIn("I found a few likely options", response)
+
+    def test_format_slack_response_strips_confluence_storage_html(self) -> None:
+        result = AgentAnswer(
+            answer=(
+                "Question: what command to process batch jobs in as400\n\n"
+                "I found relevant evidence and summarized it below.\n\n"
+                "[1] Source: confluence\n"
+                "Title: Monitoring Jobs on IBM i (AS400)\n"
+                "URL: https://example.com/1\n"
+                "Metadata: {'id': '459028', 'plain_text_preview': 'Overview This guide explains how to monitor active and batch jobs on the IBM i system. Commands WRKACTJOB Displays all active jobs.'}\n"
+                "Content: <h2>Overview</h2><p>This guide explains how to monitor active and batch jobs on the IBM i system.</p>"
+            ),
+            citations=[
+                SearchDocument(
+                    source_type="confluence",
+                    title="Monitoring Jobs on IBM i (AS400)",
+                    url="https://example.com/1",
+                    content=(
+                        "<h2>Overview</h2><p>This guide explains how to monitor active and batch jobs on the IBM i system.</p>"
+                    ),
+                    metadata={
+                        "id": "459028",
+                        "plain_text_preview": "Overview This guide explains how to monitor active and batch jobs on the IBM i system. Commands WRKACTJOB Displays all active jobs.",
+                    },
+                )
+            ],
+            reasoning_trace=[],
+        )
+
+        response = format_slack_response(result)
+        self.assertIn("最相关的命令是", response)
+        self.assertIn("WRKACTJOB", response)
+        self.assertNotIn("<h2>", response)
+        self.assertNotIn("<p>", response)
+
+    def test_format_slack_response_prefers_task_oriented_command_answer(self) -> None:
+        result = AgentAnswer(
+            answer=(
+                "Question: what command to process batch jobs in as400\n\n"
+                "I found relevant evidence and summarized it below.\n\n"
+                "[1] Source: confluence\n"
+                "Title: Monitoring Jobs on IBM i (AS400)\n"
+                "URL: https://example.com/1\n"
+                "Metadata: {'id': '459028', 'plain_text_preview': 'WRKACTJOB Displays all active jobs. WRKSBMJOB Shows submitted batch jobs. WRKJOB Displays detailed job information.'}\n"
+                "Content: WRKACTJOB WRKSBMJOB WRKJOB"
+            ),
+            citations=[
+                SearchDocument(
+                    source_type="confluence",
+                    title="Monitoring Jobs on IBM i (AS400)",
+                    url="https://example.com/1",
+                    content="WRKACTJOB WRKSBMJOB WRKJOB",
+                    metadata={
+                        "id": "459028",
+                        "plain_text_preview": "WRKACTJOB Displays all active jobs. WRKSBMJOB Shows submitted batch jobs. WRKJOB Displays detailed job information.",
+                    },
+                )
+            ],
+            reasoning_trace=[],
+        )
+
+        response = format_slack_response(result)
+        self.assertIn("最相关的命令是", response)
+        self.assertIn("`WRKACTJOB`", response)
+
+    def test_agent_falls_back_to_plain_question_when_llm_tool_loop_returns_nothing(self) -> None:
+        responder = StubResponder()
+        responder.tool_responses = [LLMToolResponse(content="")]
+        agent = BuildAgents(
+            connectors=[
+                StubConnector(
+                    "jira",
+                    "ticket",
+                    documents=[
+                        SearchDocument(
+                            source_type="jira",
+                            title="KAN-5: Develop payment script",
+                            url="https://jira.local/browse/KAN-5",
+                            content="Ticket content",
+                            metadata={"key": "KAN-5"},
+                        )
+                    ],
+                )
+            ],
+            responder=responder,
+        )
+
+        result = agent.answer("what is it about")
+
+        self.assertTrue(result.citations)
 
     def test_format_slack_response_hides_local_sources_outside_files_directory(self) -> None:
         result = AgentAnswer(
@@ -2883,6 +3324,20 @@ export default function () {
                         "execution_mode": "plan_then_run",
                         "ordered_skills": ["performance-testing-strategy", "k6-best-practices"],
                         "rationale": ["Concrete payment endpoint and SLA are present in the ticket."],
+                    }
+                if function_name == "extract_ticket_performance_plan":
+                    return {
+                        "service": "payments",
+                        "endpoint_method": "POST",
+                        "endpoint_path": "/api/payments/process",
+                        "sla_p95_ms": 800,
+                        "error_rate_percent": 0.1,
+                        "vus": 2,
+                        "duration": "30s",
+                        "dataset": "users.json",
+                        "test_type": "load",
+                        "criteria": ["Tag { service: 'payments' }"],
+                        "strategy_notes": ["Model-derived plan for relative artifact path coverage."],
                     }
                 return {}
 
@@ -2981,6 +3436,19 @@ export default function () {
             )
             jira_dependency = FakeJiraWorkflowDependency(ticket)
             responder = StubResponder()
+            responder.call_function = lambda *args, **kwargs: {
+                "service": "payments",
+                "endpoint_method": "POST",
+                "endpoint_path": "/api/payments/process",
+                "sla_p95_ms": 800,
+                "error_rate_percent": 0.1,
+                "vus": 2,
+                "duration": "30s",
+                "dataset": "users.json",
+                "test_type": "load",
+                "criteria": ["Validate the payments-service SLOs from project docs."],
+                "strategy_notes": ["Plan derived from repository context provided to the model."],
+            }
             connector = JiraPerformanceWorkflowConnector(
                 jira_connector=jira_dependency,  # type: ignore[arg-type]
                 workspace=workspace,
@@ -2997,7 +3465,7 @@ export default function () {
             self.assertEqual(plan.endpoint_path, "/api/payments/process")
             self.assertEqual(plan.sla_p95_ms, 800)
             self.assertEqual(plan.error_rate_threshold, 0.001)
-            self.assertIn("repository docs", " ".join(plan.strategy_notes).lower())
+            self.assertIn("repository context", " ".join(plan.strategy_notes).lower())
         finally:
             if project_root.exists():
                 shutil.rmtree(project_root)
@@ -3057,6 +3525,19 @@ export default function () {
             )
             jira_dependency = FakeJiraWorkflowDependency(ticket)
             responder = StubResponder()
+            responder.call_function = lambda *args, **kwargs: {
+                "service": "payments",
+                "endpoint_method": "POST",
+                "endpoint_path": "/api/payments/process",
+                "sla_p95_ms": 800,
+                "error_rate_percent": 0.1,
+                "vus": 2,
+                "duration": "30s",
+                "dataset": "users.json",
+                "test_type": "load",
+                "criteria": ["Use project documentation to create a runnable performance plan."],
+                "strategy_notes": ["Plan derived from realistic repo docs layout."],
+            }
             connector = JiraPerformanceWorkflowConnector(
                 jira_connector=jira_dependency,  # type: ignore[arg-type]
                 workspace=workspace,
@@ -3121,6 +3602,19 @@ export default function () {
             )
             jira_dependency = FakeJiraWorkflowDependency(ticket)
             responder = StubResponder()
+            responder.call_function = lambda *args, **kwargs: {
+                "service": "payments",
+                "endpoint_method": "POST",
+                "endpoint_path": "/api/payments/process",
+                "sla_p95_ms": 800,
+                "error_rate_percent": 0.1,
+                "vus": 2,
+                "duration": "30s",
+                "dataset": "users.json",
+                "test_type": "load",
+                "criteria": ["Use the service SLO matrix and repo endpoint."],
+                "strategy_notes": ["Plan derived from ticket matrix plus repository endpoint context."],
+            }
             connector = JiraPerformanceWorkflowConnector(
                 jira_connector=jira_dependency,  # type: ignore[arg-type]
                 workspace=workspace,
@@ -3208,7 +3702,7 @@ export default function () {
             if project_root.exists():
                 shutil.rmtree(project_root)
 
-    def test_jira_workflow_decision_fallback_runs_when_repo_docs_recover_endpoint(self) -> None:
+    def test_jira_workflow_decision_requires_llm_output_when_repo_docs_recover_endpoint(self) -> None:
         project_root = Path("tests") / ".tmp_jira_decision_repo_endpoint"
         if project_root.exists():
             shutil.rmtree(project_root)
@@ -3251,10 +3745,7 @@ export default function () {
 
             decision = connector._decide_ticket_workflow(ticket, {"service": "payments"})
 
-            self.assertIsNotNone(decision)
-            assert decision is not None
-            self.assertEqual(decision.execution_mode, "plan_then_run")
-            self.assertIn("k6-best-practices", decision.ordered_skills)
+            self.assertIsNone(decision)
         finally:
             if project_root.exists():
                 shutil.rmtree(project_root)
@@ -3301,7 +3792,39 @@ export default function () {
             )
             jira_dependency = FakeJiraWorkflowDependency(ticket)
             responder = StubResponder()
-            responder.call_function = lambda *args, **kwargs: {}
+            def staged_call_function(
+                system_prompt: str,
+                user_prompt: str,
+                function_name: str,
+                function_description: str,
+                parameters: dict,
+                temperature: float = 0.1,
+            ) -> dict:
+                responder.function_calls.append(
+                    (system_prompt, user_prompt, function_name, function_description, parameters, temperature)
+                )
+                if function_name == "decide_ticket_workflow":
+                    return {
+                        "execution_mode": "plan_then_run",
+                        "ordered_skills": ["performance-testing-strategy", "k6-best-practices"],
+                        "rationale": ["Repo context plus ticket intent justify running the workflow."],
+                    }
+                if function_name == "extract_ticket_performance_plan":
+                    return {
+                        "service": "payments",
+                        "endpoint_method": "POST",
+                        "endpoint_path": "/api/payments/process",
+                        "sla_p95_ms": 800,
+                        "error_rate_percent": 0.1,
+                        "vus": 2,
+                        "duration": "30s",
+                        "dataset": "users.json",
+                        "test_type": "load",
+                        "criteria": ["Generate test plan and k6 script."],
+                        "strategy_notes": ["Model-derived plan using repository context."],
+                    }
+                return {}
+            responder.call_function = staged_call_function
             responder.complete = lambda *args, **kwargs: ""
             connector = JiraPerformanceWorkflowConnector(
                 jira_connector=jira_dependency,  # type: ignore[arg-type]

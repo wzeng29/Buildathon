@@ -31,7 +31,6 @@ REQUEST_TIMEOUT_SECONDS = 30
 CONFLUENCE_EXPAND_FIELDS = "body.storage,version,space"
 JIRA_FIELDS = "summary,description,status,issuetype,assignee,project"
 CONFLUENCE_QUERY_FALLBACK_LIMIT = 3
-AS400_COMMAND_PATTERN = re.compile(r"\b[A-Z]{3,10}[A-Z0-9]{0,2}\b")
 LOGGER = logging.getLogger(__name__)
 
 
@@ -79,8 +78,32 @@ def _fallback_terms(text: str, limit: int = CONFLUENCE_QUERY_FALLBACK_LIMIT) -> 
 
 def _strip_html(value: str) -> str:
     """Convert simple Confluence storage HTML into plain text for summaries."""
-    without_tags = re.sub(r"<[^>]+>", " ", value or "")
-    return html.unescape(re.sub(r"\s+", " ", without_tags)).strip()
+    text = value or ""
+    text = re.sub(r"<!\[CDATA\[(.*?)\]\]>", r" \1 ", text, flags=re.DOTALL)
+    text = re.sub(r"<ac:plain-text-body>\s*", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"</ac:plain-text-body>", " ", text, flags=re.IGNORECASE)
+    without_tags = re.sub(r"<[^>]+>", " ", text)
+    normalized = html.unescape(re.sub(r"\s+", " ", without_tags)).strip()
+    return _fix_mojibake(normalized)
+
+
+def _fix_mojibake(value: str) -> str:
+    """Repair a few common UTF-8/Windows-1252 mojibake sequences seen in CLI output."""
+    text = value or ""
+    replacements = {
+        "â€”": "—",
+        "â€“": "–",
+        "â€˜": "'",
+        "â€™": "'",
+        "â€œ": '"',
+        "â€�": '"',
+        "â„¹ï¸": "ℹ️",
+        "馃殌": "",
+        "â†’": "→",
+    }
+    for broken, fixed in replacements.items():
+        text = text.replace(broken, fixed)
+    return text
 
 
 def _normalize_whitespace(value: str) -> str:
@@ -106,78 +129,6 @@ def _chunk_text(text: str, chunk_size: int) -> list[str]:
             break
         start = max(end - overlap, start + 1)
     return chunks
-
-
-def _extract_command_candidates(text: str) -> list[str]:
-    """Extract plausible IBM i CL command names from a text chunk."""
-    command_prefixes = (
-        "WRK",
-        "DSP",
-        "CHG",
-        "CRT",
-        "DLT",
-        "SAV",
-        "RST",
-        "RTV",
-        "STR",
-        "END",
-        "CPY",
-        "SBM",
-        "OVR",
-        "GRT",
-        "RVK",
-        "CHK",
-        "RNM",
-        "MOV",
-        "EDT",
-        "DMP",
-        "PRT",
-        "ALC",
-        "DLC",
-        "MON",
-        "SND",
-        "RCV",
-        "ADD",
-        "RMV",
-    )
-    stopwords = {
-        "ADDITION",
-        "COMMAND",
-        "COMMANDS",
-        "CONTROL",
-        "LANGUAGE",
-        "OBJECT",
-        "OBJECTS",
-        "PROGRAM",
-        "PROGRAMS",
-        "MESSAGE",
-        "MESSAGES",
-        "DISPLAY",
-        "DISPLAYING",
-        "WORK",
-        "SYSTEM",
-        "SYSTEMS",
-        "INFORMATION",
-        "DESCRIPTION",
-        "DESCRIPTIONS",
-        "PF",
-        "LF",
-        "PRTF",
-        "FILE",
-        "FILES",
-    }
-    seen: set[str] = set()
-    commands: list[str] = []
-    for match in AS400_COMMAND_PATTERN.findall(text.upper()):
-        if not match.startswith(command_prefixes):
-            continue
-        if match in stopwords:
-            continue
-        if match in seen:
-            continue
-        seen.add(match)
-        commands.append(match)
-    return commands[:12]
 
 
 def _build_confluence_url(base_url: str, links: dict[str, Any]) -> str:
@@ -467,94 +418,22 @@ class AS400ManualConnector(BaseConnector):
         if not documents:
             return []
 
-        expanded_query = self._expand_query(query)
-        command_query = self._is_command_query(query)
-        explicit_commands = _extract_command_candidates(query)
+        explicit_identifiers = self._extract_explicit_identifiers(query)
         explicit_tables = self._extract_table_candidates(query, documents)
-        table_catalog_query = self._is_table_catalog_query(query)
-        similar_table_query = self._is_similar_table_query(query)
-        if explicit_tables and similar_table_query:
-            related_documents = self._related_table_documents(documents, explicit_tables, limit)
-            if related_documents:
-                return related_documents
-        if table_catalog_query and not explicit_tables and not command_query:
-            keyword_documents = self._keyword_table_documents(query, documents, limit)
-            if keyword_documents:
-                return keyword_documents
-        candidate_documents = documents
-        manual_documents = [
-            document
-            for document in documents
-            if document.metadata.get("source_kind") == "manual_page"
-        ]
-        if command_query and manual_documents:
-            candidate_documents = manual_documents
-        elif command_query and table_catalog_query:
-            if explicit_tables:
-                explicit_table_documents = [
-                    document
-                    for document in documents
-                    if str(document.metadata.get("table_name", "")).upper() in explicit_tables
-                ]
-                if explicit_table_documents:
-                    candidate_documents = explicit_table_documents
-                else:
-                    return []
-            else:
-                keyword_documents = self._keyword_table_documents(query, documents, max(limit * 3, 6))
-                if keyword_documents:
-                    candidate_documents = keyword_documents
-                else:
-                    return []
-        elif explicit_tables and similar_table_query:
-            anchor_documents = [
-                document
-                for document in documents
-                if str(document.metadata.get("table_name", "")).upper() in explicit_tables
-            ]
-            if anchor_documents:
-                anchor_descriptions = " ".join(
-                    str(document.metadata.get("table_text", ""))
-                    for document in anchor_documents
-                )
-                expanded_query = f"{expanded_query} related similar {anchor_descriptions}".strip()
-                candidate_documents = [
-                    document
-                    for document in documents
-                    if document.metadata.get("source_kind") == "table_catalog"
-                ]
-        elif explicit_tables:
-            explicit_table_documents = [
-                document
-                for document in documents
-                if str(document.metadata.get("table_name", "")).upper() in explicit_tables
-            ]
-            if explicit_table_documents:
-                candidate_documents = explicit_table_documents
-        elif table_catalog_query:
-            table_documents = [
-                document
-                for document in documents
-                if document.metadata.get("source_kind") == "table_catalog"
-            ]
-            if table_documents:
-                candidate_documents = table_documents
-        if explicit_commands:
-            explicit_documents = [
-                document
-                for document in candidate_documents
-                if self._contains_explicit_command(document, explicit_commands)
-            ]
-            if explicit_documents:
-                candidate_documents = explicit_documents
-        phrase_documents = self._phrase_matched_documents(query, candidate_documents)
-        if phrase_documents:
-            candidate_documents = phrase_documents
+        candidate_documents, direct_results = self._candidate_documents(
+            query,
+            documents,
+            explicit_tables,
+            explicit_identifiers,
+            limit,
+        )
+        if direct_results is not None:
+            return direct_results
 
         semantic_hits = self.semantic_index.search(
-            expanded_query,
+            query,
             candidate_documents,
-            max(limit * 4, 8),
+            max(len(candidate_documents), limit * 4, 8),
         )
         if not semantic_hits:
             return []
@@ -562,10 +441,11 @@ class AS400ManualConnector(BaseConnector):
         scored = [
             (
                 self._combined_search_score(
-                    expanded_query,
+                    query,
                     semantic_score,
                     document,
-                    explicit_commands,
+                    explicit_tables,
+                    explicit_identifiers,
                 ),
                 document,
             )
@@ -573,19 +453,18 @@ class AS400ManualConnector(BaseConnector):
         ]
         scored.sort(key=lambda item: item[0], reverse=True)
         best_score = scored[0][0] if scored else 0.0
-        minimum_score = max(best_score * 0.82, 0.32)
-        if similar_table_query:
-            minimum_score = max(best_score * 0.45, 0.08)
-        elif command_query and candidate_documents and all(
-            document.metadata.get("source_kind") == "manual_page" for document in candidate_documents
-        ):
-            minimum_score = max(best_score * 0.78, 0.38)
+        minimum_score = max(best_score * 0.82, 0.05)
         filtered = [document for score, document in scored if score >= minimum_score]
         selected = filtered[:limit]
         if not selected:
             return []
-        if "command" in query.lower():
-            return selected[: min(limit, 2)]
+        if (
+            not explicit_tables
+            and selected
+            and all(document.metadata.get("source_kind") == "table_catalog" for document in selected)
+            and max(self._table_catalog_overlap_score(query, document) for document in selected) <= 0.0
+        ):
+            return []
         return selected[:limit]
 
     def create(self, request: ActionRequest) -> ActionResult:
@@ -613,7 +492,6 @@ class AS400ManualConnector(BaseConnector):
             page_texts = self._extract_page_texts_for_file(manual_path)
             for _, page_number, page_text in page_texts:
                 for chunk_index, chunk in enumerate(_chunk_text(page_text, settings.as400_chunk_chars)):
-                    command_candidates = _extract_command_candidates(chunk)
                     documents.append(
                         SearchDocument(
                             source_type=self.source_type,
@@ -624,7 +502,6 @@ class AS400ManualConnector(BaseConnector):
                                 "manual_name": manual_path.stem,
                                 "page": page_number,
                                 "chunk_index": chunk_index,
-                                "command_candidates": command_candidates,
                                 "manual_path": str(manual_path.resolve()),
                                 "source_kind": "manual_page",
                             },
@@ -655,7 +532,6 @@ class AS400ManualConnector(BaseConnector):
                             "table_name": table_name,
                             "table_text": table_text,
                             "row": row_index,
-                            "command_candidates": [],
                             "manual_path": str(manual_path.resolve()),
                             "source_kind": "table_catalog",
                         },
@@ -707,163 +583,74 @@ class AS400ManualConnector(BaseConnector):
 
     @staticmethod
     def _manual_label(manual_path: Path) -> str:
-        stem = manual_path.stem.lower()
-        if "fms_tables" in stem or "table" in stem:
-            return "FMS table catalog"
-        if "synon" in stem or "2e" in stem or "ca 2e" in stem or "ca2e" in stem:
-            return "Synon 2E tutorial"
-        if "ibm i" in stem or "as400" in stem or "cl" in stem:
-            return "IBM i / AS400 manual"
-        return manual_path.stem
-
-    @staticmethod
-    def _expand_query(query: str) -> str:
-        lowered = query.lower()
-        expansions: list[str] = [query]
-        if any(token in lowered for token in ("synon", "2e", "ca 2e", "ca2e")):
-            expansions.append("Synon 2E CA 2E tutorial model object design command")
-        if ("obj" in lowered or "object" in lowered) and any(
-            token in lowered for token in ("info", "information", "detail", "description", "see")
-        ):
-            expansions.append("WRKOBJ DSPOBJD object information object description work with objects")
-        if "lock" in lowered:
-            expansions.append("WRKOBJLCK object locks")
-        if "history log" in lowered or "job log" in lowered or "log" in lowered:
-            expansions.append("DSPLOG WRKOBJ QHST DSPOBJD")
-        if "distribution list" in lowered or ("distribution" in lowered and "list" in lowered):
-            expansions.append(
-                "WRKDSTL DSPDSTL SNADS distribution list details summary work with distribution list display distribution list"
-            )
-        if "directory" in lowered and "distribution" in lowered:
-            expansions.append("DSPDIRE WRKDSTL DSPDSTL distribution list directory")
-        if any(token in lowered for token in ("table", "physical file", "pf")):
-            expansions.append("table physical file database file record table name description")
-        return " ".join(expansions)
+        return manual_path.stem.replace("_", " ").strip()
 
     @staticmethod
     def _combined_search_score(
         query: str,
         semantic_score: float,
         document: SearchDocument,
-        explicit_commands: list[str] | None = None,
+        explicit_tables: set[str] | None = None,
+        explicit_identifiers: list[str] | None = None,
     ) -> float:
-        candidates = document.metadata.get("command_candidates", [])
-        lowered_query = query.lower()
-        lowered_content = document.content.lower()
-        lowered_title = document.title.lower()
-        lexical_score = _score(query, document.title, document.content, " ".join(candidates))
+        lexical_score = _score(query, document.title, document.content, str(document.metadata))
         base_score = (semantic_score * 0.85) + (lexical_score * 0.15)
-        explicit_commands = explicit_commands or []
-        if explicit_commands and AS400ManualConnector._contains_explicit_command(document, explicit_commands):
+        explicit_tables = explicit_tables or set()
+        explicit_identifiers = explicit_identifiers or []
+        if explicit_identifiers and AS400ManualConnector._contains_explicit_identifier(
+            document,
+            explicit_identifiers,
+        ):
             base_score += 0.6
-        if "command" in lowered_query and candidates:
-            base_score += 0.2
-        if any(command in query.upper() for command in candidates):
-            base_score += 0.15
-        if "WRKOBJ" in candidates and any(token in lowered_query for token in ("obj", "object", "info")):
-            base_score += 0.12
-        if "DSPOBJD" in candidates and any(
-            token in lowered_query for token in ("desc", "description", "detail", "info")
-        ):
-            base_score += 0.1
-        if "WRKDSTL" in candidates and any(
-            token in lowered_query for token in ("distribution", "list", "work", "create")
-        ):
-            base_score += 0.18
-        if "DSPDSTL" in candidates and any(
-            token in lowered_query for token in ("distribution", "list", "display", "show")
-        ):
-            base_score += 0.14
-        if document.metadata.get("source_kind") == "manual_page":
-            if any(token in lowered_query for token in ("delete", "remove")) and any(
-                token in lowered_content for token in ("delete", "remove", "dltf")
-            ):
-                base_score += 0.28
-            if any(token in lowered_query for token in ("display", "show", "open", "view")) and any(
-                token in lowered_content for token in ("display", "show", "open", "view", "dsppfm", "dspfd")
-            ):
-                base_score += 0.24
-            if "create" in lowered_query and any(
-                token in lowered_content for token in ("create", "crt", "generate")
-            ):
-                base_score += 0.22
-            if "physical file" in lowered_query and "physical file" in lowered_content:
-                base_score += 0.12
         table_name = str(document.metadata.get("table_name", "")).upper()
-        if table_name and table_name in query.upper():
+        if table_name and table_name in explicit_tables:
             base_score += 0.45
-        if document.metadata.get("source_kind") == "table_catalog" and any(
-            token in lowered_query for token in ("table", "physical file", "pf", "file")
-        ):
-            base_score += 0.18
-        if document.metadata.get("source_kind") == "table_catalog" and any(
-            token in lowered_query for token in ("related", "similar", "like")
-        ):
-            base_score += 0.12
-        manual_name = str(document.metadata.get("manual_name", "")).lower()
-        if any(token in lowered_query for token in ("synon", "2e", "ca 2e", "ca2e")) and any(
-            token in manual_name for token in ("synon", "2e", "ca2e")
-        ):
-            base_score += 0.35
-        if "vendor" in lowered_query and document.metadata.get("source_kind") == "table_catalog":
-            table_text = str(document.metadata.get("table_text", "")).lower()
-            if table_text == "vendor physical file":
-                base_score += 0.8
-            elif table_text.startswith("vendor "):
-                base_score += 0.35
-        if any(token in lowered_query for token in ("delete", "display", "open", "view")) and lowered_title:
-            if any(token in lowered_title for token in ("physical file", "table")):
-                base_score += 0.05
+        if document.metadata.get("source_kind") == "table_catalog":
+            base_score += AS400ManualConnector._table_catalog_overlap_score(query, document)
         return base_score
 
     @staticmethod
-    def _extract_table_candidates(query: str, documents: list[SearchDocument]) -> set[str]:
-        query_upper = query.upper()
-        return {
-            str(document.metadata.get("table_name", "")).upper()
-            for document in documents
-            if document.metadata.get("table_name")
-            and str(document.metadata.get("table_name", "")).upper() in query_upper
-        }
+    def _candidate_documents(
+        query: str,
+        documents: list[SearchDocument],
+        explicit_tables: set[str],
+        explicit_identifiers: list[str],
+        limit: int,
+    ) -> tuple[list[SearchDocument], list[SearchDocument] | None]:
+        if explicit_tables and AS400ManualConnector._related_query_score(query) > 0:
+            related = AS400ManualConnector._related_table_documents(documents, explicit_tables)
+            if related:
+                return related, related[:limit]
+
+        if explicit_tables:
+            table_documents = [
+                document
+                for document in documents
+                if str(document.metadata.get("table_name", "")).upper() in explicit_tables
+            ]
+            if table_documents:
+                return table_documents, None
+
+        if explicit_identifiers:
+            identifier_documents = [
+                document
+                for document in documents
+                if AS400ManualConnector._contains_explicit_identifier(document, explicit_identifiers)
+            ]
+            if identifier_documents:
+                return identifier_documents, None
+
+        return documents, None
 
     @staticmethod
-    def _is_table_catalog_query(query: str) -> bool:
-        lowered = query.lower()
-        return any(token in lowered for token in ("table", "physical file", "physical files", "pf", "files"))
-
-    @staticmethod
-    def _is_similar_table_query(query: str) -> bool:
-        lowered = query.lower()
-        return any(token in lowered for token in ("similar", "related", "like"))
-
-    @staticmethod
-    def _is_command_query(query: str) -> bool:
-        lowered = query.lower()
-        command_phrases = (
-            "what command",
-            "which command",
-            "command to use",
-            "how to use",
-            "how do i use",
-            "what is this command for",
-            "create file",
-            "generate file",
-            "display file",
-            "open file",
-            "delete file",
-            "delete table",
-            "display table",
-            "open table",
-        )
-        return any(phrase in lowered for phrase in command_phrases) or bool(
-            _extract_command_candidates(query)
-        )
+    def _related_query_score(query: str) -> int:
+        related_terms = {"similar", "related", "like"}
+        return len(_tokenize(query) & related_terms)
 
     @staticmethod
     def _related_table_documents(
         documents: list[SearchDocument],
         explicit_tables: set[str],
-        limit: int,
     ) -> list[SearchDocument]:
         anchor_documents = [
             document
@@ -881,143 +668,104 @@ class AS400ManualConnector(BaseConnector):
         }
         related_scored: list[tuple[float, SearchDocument]] = []
         for document in documents:
-            if document is anchor:
-                continue
-            if document.metadata.get("source_kind") != "table_catalog":
+            if document is anchor or document.metadata.get("source_kind") != "table_catalog":
                 continue
             candidate_tokens = set(_tokenize(str(document.metadata.get("table_text", ""))))
             overlap = len(anchor_tokens & candidate_tokens)
-            score = float(overlap)
-            if score <= 0:
+            if overlap <= 0:
                 continue
-            related_scored.append((score, document))
+            related_scored.append((float(overlap), document))
 
         related_scored.sort(
             key=lambda item: (item[0], len(str(item[1].metadata.get("table_text", "")))),
             reverse=True,
         )
-        related = [document for _, document in related_scored[: max(limit - 1, 1)]]
-        return [anchor, *related]
+        return [anchor, *[document for _, document in related_scored]]
 
     @staticmethod
-    def _keyword_table_documents(
-        query: str,
-        documents: list[SearchDocument],
-        limit: int,
-    ) -> list[SearchDocument]:
-        query_terms = {
-            term
-            for term in _tokenize(query)
-            if term
-            not in {
-                "find",
-                "all",
-                "which",
-                "show",
-                "table",
-                "tables",
-                "physical",
-                "file",
-                "files",
-                "related",
-                "about",
-                "what",
-                "are",
-                "the",
-                "as400",
-                "ibm",
-                "command",
-                "commands",
-                "open",
-                "use",
-                "using",
-                "see",
-                "records",
-                "record",
-                "view",
-                "show",
-                "how",
-                "do",
-                "does",
-                "in",
-                "to",
-                "of",
-                "that",
-            }
-        }
+    def _table_catalog_overlap_score(query: str, document: SearchDocument) -> float:
+        query_terms = AS400ManualConnector._meaningful_terms(query)
         if not query_terms:
-            return []
+            return 0.0
 
-        scored: list[tuple[float, SearchDocument]] = []
-        for document in documents:
-            if document.metadata.get("source_kind") != "table_catalog":
-                continue
-            table_name = str(document.metadata.get("table_name", ""))
-            table_text = str(document.metadata.get("table_text", ""))
-            searchable = f"{table_name} {table_text}".lower()
-            searchable_terms = _tokenize(searchable)
-            overlap = len(query_terms & searchable_terms)
-            if overlap <= 0:
-                continue
+        table_name = str(document.metadata.get("table_name", ""))
+        table_text = str(document.metadata.get("table_text", ""))
+        searchable_terms = _tokenize(f"{table_name} {table_text}")
+        if not searchable_terms:
+            return 0.0
 
-            score = float(overlap)
-            normalized_text = table_text.lower()
-            if any(normalized_text.startswith(term) for term in query_terms):
-                score += 0.6
-            if all(term in normalized_text for term in query_terms):
-                score += 0.4
-            if "vendor" in query_terms and normalized_text == "vendor physical file":
-                score += 0.8
-            scored.append((score, document))
+        overlap = query_terms & searchable_terms
+        if not overlap:
+            return 0.0
 
-        scored.sort(
-            key=lambda item: (
-                item[0],
-                len(str(item[1].metadata.get("table_text", ""))),
-                item[1].metadata.get("table_name", ""),
-            ),
-            reverse=True,
-        )
-        return [document for _, document in scored[:limit]]
+        recall = len(overlap) / len(query_terms)
+        precision = len(overlap) / len(searchable_terms)
+        return (recall * 0.45) + (precision * 0.35)
 
     @staticmethod
-    def _contains_explicit_command(document: SearchDocument, explicit_commands: list[str]) -> bool:
-        searchable = (
-            f"{document.title}\n{document.content}\n"
-            f"{' '.join(document.metadata.get('command_candidates', []))}"
-        ).upper()
-        return any(command.upper() in searchable for command in explicit_commands)
+    def _meaningful_terms(text: str) -> set[str]:
+        stopwords = {
+            "find",
+            "all",
+            "which",
+            "show",
+            "about",
+            "what",
+            "are",
+            "the",
+            "as400",
+            "ibm",
+            "i",
+            "command",
+            "commands",
+            "open",
+            "use",
+            "using",
+            "see",
+            "records",
+            "record",
+            "view",
+            "how",
+            "do",
+            "does",
+            "in",
+            "to",
+            "of",
+            "that",
+            "this",
+            "is",
+            "if",
+            "want",
+            "then",
+        }
+        return {term for term in _tokenize(text) if len(term) > 1 and term not in stopwords}
 
     @staticmethod
-    def _phrase_matched_documents(
-        query: str,
-        documents: list[SearchDocument],
-    ) -> list[SearchDocument]:
-        lowered = query.lower()
-        phrases: list[str] = []
-        if "command definition statements" in lowered:
-            phrases.append("command definition statements")
-        if "function differently" in lowered:
-            phrases.append("function differently")
-        if "procedure or program" in lowered:
-            phrases.append("procedure or program")
-        if not phrases:
-            return []
-
-        matched = [
-            document
+    def _extract_table_candidates(query: str, documents: list[SearchDocument]) -> set[str]:
+        query_upper = query.upper()
+        return {
+            str(document.metadata.get("table_name", "")).upper()
             for document in documents
-            if all(phrase in document.content.lower() for phrase in phrases[:2])
-        ]
-        if matched:
-            return matched
+            if document.metadata.get("table_name")
+            and str(document.metadata.get("table_name", "")).upper() in query_upper
+        }
 
-        return [
-            document
-            for document in documents
-            if any(phrase in document.content.lower() for phrase in phrases)
-        ]
+    @staticmethod
+    def _extract_explicit_identifiers(query: str) -> list[str]:
+        matches = re.findall(r"\b[A-Z][A-Z0-9_]{2,11}\b", query.upper())
+        seen: set[str] = set()
+        identifiers: list[str] = []
+        for match in matches:
+            if match in seen:
+                continue
+            seen.add(match)
+            identifiers.append(match)
+        return identifiers[:12]
 
+    @staticmethod
+    def _contains_explicit_identifier(document: SearchDocument, identifiers: list[str]) -> bool:
+        searchable = f"{document.title}\n{document.content}\n{document.metadata}".upper()
+        return any(identifier.upper() in searchable for identifier in identifiers)
 
 class ConfluenceConnector(BaseConnector):
     """Search and manage Confluence pages through the content API."""
@@ -1811,7 +1559,13 @@ class JiraPerformanceWorkflowConnector(BaseConnector):
         LOGGER.info("Workflow ticket loaded: issue=%s", issue_key)
         decision = self._decide_ticket_workflow(jira_result.document, request.fields)
         if decision is None:
-            return ActionResult(False, f"Could not determine workflow decision for Jira ticket {issue_key}.")
+            decision = self._fallback_ticket_workflow_decision(jira_result.document, request)
+            LOGGER.info(
+                "Workflow decision fallback applied: issue=%s mode=%s skills=%s",
+                issue_key,
+                decision.execution_mode,
+                ",".join(decision.ordered_skills),
+            )
         selected_skills = self.skill_catalog.for_names(decision.ordered_skills)
         selected_skill_names = [skill.name for skill in selected_skills]
         LOGGER.info(
@@ -1936,6 +1690,20 @@ class JiraPerformanceWorkflowConnector(BaseConnector):
         passed = run_result.exit_code == 0 and self._passed(_k6_metric_summary(run_result), plan)
         return ActionResult(passed, message, document=report_document)
 
+    @staticmethod
+    def _fallback_ticket_workflow_decision(
+        ticket: SearchDocument,
+        request: ActionRequest,
+    ) -> WorkflowDecision:
+        issue_key = str(ticket.metadata.get("key") or request.identifier or "").strip() or "unknown ticket"
+        return WorkflowDecision(
+            ordered_skills=["performance-testing-strategy", "k6-best-practices"],
+            execution_mode="plan_then_run",
+            rationale=[
+                f"Applied explicit workflow fallback for {issue_key} because the model returned no workflow decision.",
+            ],
+        )
+
     def _build_plan(
         self,
         ticket: SearchDocument,
@@ -1946,30 +1714,44 @@ class JiraPerformanceWorkflowConnector(BaseConnector):
         modeled_plan = self._build_plan_via_model(ticket, fields, strategy_bundle)
         if self._is_ticket_grounded_plan(modeled_plan):
             return modeled_plan
-        ticket_plan = self._build_plan_from_ticket_text(ticket, fields)
-        if self._is_ticket_grounded_plan(ticket_plan):
-            return ticket_plan
-        return self._build_plan_from_ticket_and_repo_docs(ticket, fields)
+        repo_context = self._load_repo_docs_context()
+        if repo_context:
+            modeled_plan_with_repo = self._build_plan_via_model(ticket, fields, strategy_bundle, repo_context=repo_context)
+            if self._is_ticket_grounded_plan(modeled_plan_with_repo):
+                return modeled_plan_with_repo
+        deterministic_plan = self._build_plan_from_ticket_text(ticket, fields)
+        if self._is_ticket_grounded_plan(deterministic_plan):
+            return deterministic_plan
+        deterministic_plan_with_repo = self._build_plan_from_ticket_and_repo_docs(ticket, fields)
+        if self._is_ticket_grounded_plan(deterministic_plan_with_repo):
+            return deterministic_plan_with_repo
+        return None
 
     def _build_plan_via_model(
         self,
         ticket: SearchDocument,
         fields: dict[str, str],
         bundle: SkillBundle,
+        repo_context: str = "",
     ) -> TicketPerformancePlan | None:
         if not bundle.skill_text:
             return None
         summary = ticket.title.split(": ", 1)[1] if ": " in ticket.title else ticket.title
+        repo_context_block = ""
+        if repo_context.strip():
+            repo_context_block = f"\nRepository context:\n{repo_context[:6000]}\n\n"
         payload = self.responder.call_function(
             system_prompt=(
                 "You are extracting a structured performance test plan from a Jira ticket. "
-                "Use the supplied skill, references, and evals as mandatory guidance."
+                "Use the supplied skill, references, evals, and optional repository context as mandatory guidance. "
+                "Do not rely on keyword guessing. Return only fields grounded in the provided material, and infer conservatively."
             ),
             user_prompt=(
                 f"Ticket key: {ticket.metadata.get('key', '')}\n"
                 f"Summary: {summary}\n"
                 f"Description:\n{ticket.content}\n\n"
                 f"User overrides: {fields}\n\n"
+                f"{repo_context_block}"
                 f"Skill:\n{bundle.skill_text}\n\n"
                 f"References:\n{self._format_skill_references(bundle)}\n\n"
                 f"Evals:\n{self._format_skill_evals(bundle)}\n\n"
@@ -2013,7 +1795,7 @@ class JiraPerformanceWorkflowConnector(BaseConnector):
         combined = f"{summary}\n{description}"
         endpoint_method, endpoint_path = self._extract_endpoint(combined)
         service = self._normalize_service_name(
-            (fields.get("service") or self._infer_service(combined, endpoint_path) or self._infer_service_from_issue(summary, description)).lower()
+            (fields.get("service") or self._infer_service(combined, endpoint_path)).lower()
         )
         sla_p95_ms = self._extract_int(combined, r"\bp95\b[^\d]{0,20}(\d+)\s*ms", 0)
         if sla_p95_ms <= 0 and service:
@@ -2062,7 +1844,7 @@ class JiraPerformanceWorkflowConnector(BaseConnector):
             vus=vus,
             duration=duration,
             dataset=fields.get("dataset") or self._extract_dataset(combined) or "users.json",
-            test_type=fields.get("type") or self._extract_test_type(combined),
+            test_type=fields.get("type") or self._extract_test_type(combined, endpoint_method),
             criteria=criteria,
             strategy_notes=strategy_notes,
         )
@@ -2081,7 +1863,7 @@ class JiraPerformanceWorkflowConnector(BaseConnector):
 
         endpoint_method, endpoint_path = self._extract_endpoint(combined)
         service = (fields.get("service") or self._infer_service(combined, endpoint_path)).lower()
-        service = self._normalize_service_name(service or self._infer_service_from_issue(summary, description))
+        service = self._normalize_service_name(service)
         if not service:
             return None
 
@@ -2134,7 +1916,7 @@ class JiraPerformanceWorkflowConnector(BaseConnector):
             vus=vus,
             duration=duration,
             dataset=fields.get("dataset") or self._extract_dataset(combined) or "users.json",
-            test_type=fields.get("type") or self._extract_test_type(combined),
+            test_type=fields.get("type") or self._extract_test_type(combined, endpoint_method),
             criteria=criteria[:8],
             strategy_notes=strategy_notes,
         )
@@ -2550,122 +2332,16 @@ export function handleSummary(data) {{
             temperature=0.1,
         )
         if not isinstance(payload, dict):
-            return self._fallback_ticket_workflow_decision(ticket, fields)
+            return None
         ordered_skills = self._normalize_selected_skill_names(payload.get("ordered_skills"))
         execution_mode = str(payload.get("execution_mode") or "").strip()
         rationale = [str(item) for item in (payload.get("rationale") or []) if str(item).strip()]
         if execution_mode not in {"plan_only", "plan_then_run"} or not ordered_skills:
-            return self._fallback_ticket_workflow_decision(ticket, fields)
+            return None
         return WorkflowDecision(
             ordered_skills=ordered_skills,
             execution_mode=execution_mode,
             rationale=rationale[:6],
-        )
-
-    def _fallback_ticket_workflow_decision(
-        self,
-        ticket: SearchDocument,
-        fields: dict[str, str],
-    ) -> WorkflowDecision | None:
-        """Choose a safe deterministic workflow when model tool-calling is unavailable."""
-        summary = ticket.title.split(": ", 1)[1] if ": " in ticket.title else ticket.title
-        combined = " ".join(
-            [
-                summary,
-                ticket.content,
-                " ".join(f"{key} {value}" for key, value in fields.items()),
-            ]
-        ).lower()
-        if not combined.strip():
-            return None
-
-        planning_terms = (
-            "strategy",
-            "planning",
-            "plan",
-            "estimate",
-            "estimation",
-            "workload",
-            "sizing",
-            "traffic",
-            "sla",
-            "baseline",
-            "requirements",
-        )
-        execution_terms = (
-            "k6",
-            "load test",
-            "stress test",
-            "soak test",
-            "performance test",
-            "run",
-            "execute",
-            "script",
-            "endpoint",
-            "api/",
-            "post ",
-            "get ",
-            "put ",
-            "delete ",
-            "vus",
-            "duration",
-        )
-        report_terms = (
-            "analysis",
-            "analyze",
-            "compare",
-            "comparison",
-            "report",
-            "executive",
-            "business summary",
-            "stakeholder",
-        )
-
-        has_planning = any(term in combined for term in planning_terms)
-        has_execution = any(term in combined for term in execution_terms)
-        has_report = any(term in combined for term in report_terms)
-        has_concrete_endpoint = bool(
-            re.search(r"\b(?:GET|POST|PUT|PATCH|DELETE)\s+/\S+", ticket.content, re.IGNORECASE)
-            or re.search(r"\bendpoint\s*:\s*\S+", ticket.content, re.IGNORECASE)
-        )
-        has_runtime_shape = bool(
-            re.search(r"\bvus?\s*[:=]?\s*\d+", ticket.content, re.IGNORECASE)
-            or re.search(r"\bduration\s*[:=]?\s*\d+\s*(?:s|m|h|sec|secs|seconds|minutes?)\b", ticket.content, re.IGNORECASE)
-        )
-        recovered_plan = self._build_plan_from_ticket_text(ticket, fields) or self._build_plan_from_ticket_and_repo_docs(ticket, fields)
-        recovered_endpoint = bool(
-            recovered_plan
-            and recovered_plan.endpoint_method in {"GET", "POST", "PUT", "PATCH", "DELETE"}
-            and recovered_plan.endpoint_path
-            and recovered_plan.endpoint_path != "/"
-        )
-
-        if not (has_planning or has_execution or has_report or has_concrete_endpoint or has_runtime_shape or recovered_endpoint):
-            return None
-
-        ordered_skills: list[str] = []
-        if has_planning or has_concrete_endpoint or has_runtime_shape or recovered_endpoint:
-            ordered_skills.append("performance-testing-strategy")
-        if has_execution or has_concrete_endpoint or recovered_endpoint:
-            ordered_skills.append("k6-best-practices")
-        if has_report:
-            ordered_skills.append("performance-report-analysis")
-        if not ordered_skills:
-            ordered_skills.append("performance-testing-strategy")
-
-        execution_mode = "plan_then_run" if ("k6-best-practices" in ordered_skills and (has_concrete_endpoint or recovered_endpoint)) else "plan_only"
-        LOGGER.info(
-            "Workflow decision fallback used: issue=%s mode=%s skills=%s",
-            ticket.metadata.get("key", ""),
-            execution_mode,
-            ",".join(ordered_skills),
-        )
-        return WorkflowDecision(
-            ordered_skills=ordered_skills,
-            execution_mode=execution_mode,
-            rationale=[
-                "OpenAI workflow decision was unavailable or invalid, so deterministic ticket keyword rules selected the workflow.",
-            ],
         )
 
     @staticmethod
@@ -2836,56 +2512,21 @@ export function handleSummary(data) {{
     @staticmethod
     def _normalize_service_name(service: str) -> str:
         normalized = (service or "").strip().lower()
-        aliases = {
-            "payments-service": "payments",
-            "payment-service": "payments",
-            "payment": "payments",
-            "orders-service": "orders",
-            "order-service": "orders",
-            "order": "orders",
-            "cart-service": "cart",
-            "products-service": "products",
-            "product-service": "products",
-            "users-api": "auth",
-            "users-service": "auth",
-            "user-service": "auth",
-            "users": "auth",
-        }
-        return aliases.get(normalized, normalized)
-
-    def _infer_service_from_issue(self, summary: str, description: str) -> str:
-        lowered = f"{summary}\n{description}".lower()
-        service_targets = {
-            "users-api": "auth",
-            "users-service": "auth",
-            "auth": "auth",
-            "products-service": "products",
-            "products": "products",
-            "cart-service": "cart",
-            "cart": "cart",
-            "orders-service": "orders",
-            "orders": "orders",
-            "payments-service": "payments",
-            "payments": "payments",
-        }
-        for token, service in service_targets.items():
-            if token in lowered:
-                return service
-        return ""
+        for canonical in ("auth", "products", "cart", "orders", "payments"):
+            if normalized in JiraPerformanceWorkflowConnector._service_aliases(canonical):
+                return canonical
+        return normalized
 
     def _repo_service_context(self, repo_context: str, service: str) -> str:
-        alias_map = {
-            "auth": ("users-api", "users-service", "auth"),
-            "products": ("products-service", "products"),
-            "cart": ("cart-service", "cart"),
-            "orders": ("orders-service", "orders"),
-            "payments": ("payments-service", "payments"),
-        }
+        structured_block = self._structured_service_context(repo_context, service)
+        if structured_block:
+            return structured_block
         lines = repo_context.splitlines()
         selected: list[str] = []
+        aliases = self._service_aliases(service)
         for line in lines:
             lowered = line.lower()
-            if any(alias in lowered for alias in alias_map.get(service, ())):
+            if any(alias in lowered for alias in aliases):
                 selected.append(line)
         if selected:
             return "\n".join(selected)
@@ -2907,6 +2548,9 @@ export function handleSummary(data) {{
     def _extract_repo_slo_int(self, repo_context: str, service: str, field_name: str) -> int:
         if field_name != "p95":
             return 0
+        structured = self._structured_service_record(repo_context, service)
+        if structured.get("p95_ms"):
+            return int(structured["p95_ms"])
         service_context = self._repo_service_context(repo_context, service)
         match = re.search(r"<\s*(\d+)\s*ms", service_context, re.IGNORECASE)
         if match:
@@ -2914,14 +2558,7 @@ export function handleSummary(data) {{
                 return int(match.group(1))
             except (TypeError, ValueError):
                 return 0
-        service_aliases = {
-            "auth": ("users-api", "users-service"),
-            "products": ("products-service",),
-            "cart": ("cart-service",),
-            "orders": ("orders-service",),
-            "payments": ("payments-service",),
-        }
-        aliases = service_aliases.get(service, ())
+        aliases = tuple(alias for alias in self._service_aliases(service) if alias != service)
         lines = [line.strip() for line in repo_context.splitlines()]
         for index, line in enumerate(lines):
             lowered = line.lower()
@@ -2939,6 +2576,9 @@ export function handleSummary(data) {{
     def _extract_repo_slo_float(self, repo_context: str, service: str, field_name: str) -> float:
         if field_name != "error_rate":
             return 0
+        structured = self._structured_service_record(repo_context, service)
+        if structured.get("error_rate_percent"):
+            return float(structured["error_rate_percent"])
         service_context = self._repo_service_context(repo_context, service)
         match = re.search(r"<\s*(\d+(?:\.\d+)?)\s*%", service_context, re.IGNORECASE)
         if match:
@@ -2946,14 +2586,7 @@ export function handleSummary(data) {{
                 return float(match.group(1))
             except (TypeError, ValueError):
                 return 0
-        service_aliases = {
-            "auth": ("users-api", "users-service"),
-            "products": ("products-service",),
-            "cart": ("cart-service",),
-            "orders": ("orders-service",),
-            "payments": ("payments-service",),
-        }
-        aliases = service_aliases.get(service, ())
+        aliases = tuple(alias for alias in self._service_aliases(service) if alias != service)
         lines = [line.strip() for line in repo_context.splitlines()]
         for index, line in enumerate(lines):
             lowered = line.lower()
@@ -2971,6 +2604,9 @@ export function handleSummary(data) {{
     def _extract_service_scoped_slo_int(self, text: str, service: str, field_name: str) -> int:
         if field_name != "p95":
             return 0
+        structured = self._structured_service_record(text, service)
+        if structured.get("p95_ms"):
+            return int(structured["p95_ms"])
         aliases = self._service_aliases(service)
         lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
         matched_ranges: list[tuple[int, int]] = []
@@ -3005,6 +2641,9 @@ export function handleSummary(data) {{
     def _extract_service_scoped_slo_float(self, text: str, service: str, field_name: str) -> float:
         if field_name != "error_rate":
             return 0
+        structured = self._structured_service_record(text, service)
+        if structured.get("error_rate_percent"):
+            return float(structured["error_rate_percent"])
         aliases = self._service_aliases(service)
         lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
         matched_ranges: list[tuple[int, int]] = []
@@ -3039,13 +2678,49 @@ export function handleSummary(data) {{
     @staticmethod
     def _service_aliases(service: str) -> tuple[str, ...]:
         alias_map = {
-            "auth": ("users-api", "users-service", "auth"),
-            "products": ("products-service", "products"),
-            "cart": ("cart-service", "cart"),
-            "orders": ("orders-service", "orders"),
-            "payments": ("payments-service", "payments"),
+            "auth": ("auth", "users-api", "users-service", "user-service", "users"),
+            "products": ("products", "products-service", "product-service"),
+            "cart": ("cart", "cart-service"),
+            "orders": ("orders", "orders-service", "order-service", "order"),
+            "payments": ("payments", "payments-service", "payment-service", "payment"),
         }
         return alias_map.get(service, (service,))
+
+    def _structured_service_context(self, text: str, service: str) -> str:
+        record = self._structured_service_record(text, service)
+        if not record:
+            return ""
+        parts = [f"service: {record['service']}"]
+        if record.get("endpoint"):
+            parts.append(f"endpoint: {record['endpoint']}")
+        if record.get("p95_ms"):
+            parts.append(f"p95: < {record['p95_ms']}ms")
+        if record.get("error_rate_percent"):
+            parts.append(f"error_rate: < {record['error_rate_percent']}%")
+        return "\n".join(parts)
+
+    def _structured_service_record(self, text: str, service: str) -> dict[str, object]:
+        aliases = self._service_aliases(service)
+        lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+        for index, line in enumerate(lines):
+            lowered = line.lower()
+            if not any(alias in lowered for alias in aliases):
+                continue
+            block = "\n".join(lines[index : min(index + 8, len(lines))])
+            p95_match = re.search(r"<\s*(\d+)\s*ms", block, re.IGNORECASE)
+            error_match = re.search(r"<\s*(\d+(?:\.\d+)?)\s*%", block, re.IGNORECASE)
+            endpoint_match = re.search(
+                r"\b(GET|POST|PUT|PATCH|DELETE)\s+((?:https?://[^\s/]+)?/\S+)",
+                block,
+                re.IGNORECASE,
+            )
+            return {
+                "service": service,
+                "endpoint": endpoint_match.group(2) if endpoint_match else "",
+                "p95_ms": int(p95_match.group(1)) if p95_match else 0,
+                "error_rate_percent": float(error_match.group(1)) if error_match else 0.0,
+            }
+        return {}
 
     def _load_skill_bundle(self, skill_name: str) -> SkillBundle:
         skill = self.skill_catalog.get(skill_name)
@@ -3330,17 +3005,30 @@ export function handleSummary(data) {{
 
     @staticmethod
     def _infer_service(text: str, endpoint_path: str) -> str:
+        normalized_path = endpoint_path.lower().strip()
+        path_match = re.search(r"/api/([a-z0-9_-]+)", normalized_path)
+        if path_match:
+            candidate = JiraPerformanceWorkflowConnector._normalize_service_name(path_match.group(1))
+            if candidate:
+                return candidate
+
+        tag_match = re.search(r"\{\s*service\s*:\s*['\"]?([a-z0-9_-]+)['\"]?\s*\}", text, re.IGNORECASE)
+        if tag_match:
+            candidate = JiraPerformanceWorkflowConnector._normalize_service_name(tag_match.group(1))
+            if candidate:
+                return candidate
+
+        service_match = re.search(r"\bservice\s*[:=]\s*([a-z0-9_-]+)\b", text, re.IGNORECASE)
+        if service_match:
+            candidate = JiraPerformanceWorkflowConnector._normalize_service_name(service_match.group(1))
+            if candidate:
+                return candidate
+
         lowered = text.lower()
-        service_keywords = {
-            "payments": ("payments", "/api/payments", "payment", "card declined", "transaction_id"),
-            "auth": ("auth", "/api/auth", "login", "token"),
-            "products": ("products", "/api/products", "catalog", "inventory"),
-            "cart": ("cart", "/api/cart", "basket", "checkout cart"),
-            "orders": ("orders", "/api/orders", "order id", "order status"),
-        }
-        for service, hints in service_keywords.items():
-            if any(hint in lowered or hint in endpoint_path.lower() for hint in hints):
-                return service
+        for token in _tokenize(lowered):
+            candidate = JiraPerformanceWorkflowConnector._normalize_service_name(token)
+            if candidate in {"auth", "products", "cart", "orders", "payments"}:
+                return candidate
         return ""
 
     @staticmethod
@@ -3378,15 +3066,14 @@ export function handleSummary(data) {{
         return None
 
     @staticmethod
-    def _extract_test_type(text: str) -> str:
+    def _extract_test_type(text: str, endpoint_method: str = "GET") -> str:
         lowered = text.lower()
-        if "stress" in lowered:
-            return "stress"
-        if "soak" in lowered:
-            return "soak"
-        if "spike" in lowered:
-            return "spike"
-        return "load"
+        match = re.search(r"\b(load|stress|soak|spike|smoke)\b", lowered)
+        if match:
+            return match.group(1)
+        if endpoint_method.upper() in {"POST", "PUT", "PATCH", "DELETE"}:
+            return "load"
+        return "smoke"
 
     @staticmethod
     def _extract_acceptance_criteria(text: str) -> list[str]:
@@ -3395,22 +3082,12 @@ export function handleSummary(data) {{
             line = raw_line.strip(" -\t")
             if not line:
                 continue
-            lowered = line.lower()
-            if any(
-                token in lowered
-                for token in (
-                    "approved",
-                    "rejected",
-                    "transaction_id",
-                    "card declined",
-                    "traceparent",
-                    "tempo",
-                    "80%",
-                    "20%",
-                    "201",
-                    "status",
-                    "{ service:",
-                )
+            if (
+                ":" in line
+                or "%" in line
+                or "{" in line
+                or re.search(r"\b\d{3}\b", line)
+                or re.search(r"\b(?:approved|rejected|traceparent|tempo|transaction_id)\b", line, re.IGNORECASE)
             ):
                 criteria.append(line)
         deduped: list[str] = []
