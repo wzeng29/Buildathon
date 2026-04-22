@@ -14,7 +14,7 @@ from src.models import ActionRequest, SearchDocument
 
 COMMAND_PATTERN = re.compile(
     r"^\s*(create|read|get|update|edit|delete|remove|close|run)\s+"
-    r"(jira|confluence|k6|grafana)\s+"
+    r"(jira|confluence|k6|grafana|datadog)\s+"
     r"(ticket|issue|page|test|report|workflow|dashboard)\b",
     re.IGNORECASE,
 )
@@ -23,7 +23,7 @@ NATURAL_COMMAND_PATTERN = re.compile(
     r"(?:a|an|the)?\s*"
     r"(ticket|issue|page|test|report|workflow|dashboard)\s+"
     r"(?:in|on|from)?\s*"
-    r"(jira|confluence|k6|grafana)\b[:\s-]*",
+    r"(jira|confluence|k6|grafana|datadog)\b[:\s-]*",
     re.IGNORECASE,
 )
 FOLLOW_UP_COMMAND_PATTERN = re.compile(

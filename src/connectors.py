@@ -3497,6 +3497,65 @@ class GrafanaConnector(BaseConnector):
             return direct_url, direct_token, "direct"
         return "", "", ""
 
+class DatadogConnector(BaseConnector):
+    source_type = "datadog"
+    target_type = "dashboard"   # or "monitor" if that matches your use case better
+
+    def __init__(self, mcp_adapter: MCPAdapter | None = None) -> None:
+        super().__init__(mcp_adapter=mcp_adapter)
+
+    @property
+    def configured(self) -> bool:
+        if self.mcp_adapter and self.mcp_adapter.is_enabled(self.source_type):
+            return True
+        return False  # or direct Datadog API fallback if you add one
+
+    @property
+    def configuration_message(self) -> str:
+        return "Datadog is not configured."
+
+    def search(self, query: str, limit: int) -> list[SearchDocument]:
+        if not self.configured:
+            return []
+        if self.mcp_adapter:
+            delegated = self.mcp_adapter.search(self.source_type, query, limit)
+            if delegated is not None:
+                return delegated
+        return []
+
+    def create(self, request: ActionRequest) -> ActionResult:
+        if self.mcp_adapter:
+            delegated = self.mcp_adapter.execute(self.source_type, request)
+            if delegated is not None:
+                return delegated
+        return ActionResult(False, "Creating Datadog dashboards is not supported.")
+
+    def read(self, request: ActionRequest) -> ActionResult:
+        if self.mcp_adapter:
+            delegated = self.mcp_adapter.execute(self.source_type, request)
+            if delegated is not None:
+                return delegated
+        query = request.identifier or request.fields.get("query") or ""
+        if not query:
+            return ActionResult(False, "Reading a Datadog dashboard requires a search term.")
+        results = self.search(query, 1)
+        if not results:
+            return ActionResult(False, f"Could not find a Datadog dashboard for '{query}'.")
+        return ActionResult(True, f"Loaded Datadog dashboard for {query}.", document=results[0])
+
+    def update(self, request: ActionRequest) -> ActionResult:
+        if self.mcp_adapter:
+            delegated = self.mcp_adapter.execute(self.source_type, request)
+            if delegated is not None:
+                return delegated
+        return ActionResult(False, "Updating Datadog dashboards is not supported.")
+
+    def delete(self, request: ActionRequest) -> ActionResult:
+        if self.mcp_adapter:
+            delegated = self.mcp_adapter.execute(self.source_type, request)
+            if delegated is not None:
+                return delegated
+        return ActionResult(False, "Deleting Datadog dashboards is not supported.")
 
 def build_connectors() -> list[BaseConnector]:
     """Create the default connector set used by the agent."""
@@ -3505,6 +3564,7 @@ def build_connectors() -> list[BaseConnector]:
     skill_catalog = ProjectSkillCatalog()
     jira_connector = JiraConnector(mcp_adapter=mcp_adapter)
     grafana_connector = GrafanaConnector(mcp_adapter=mcp_adapter)
+    datadog_connector = DatadogConnector(mcp_adapter=mcp_adapter)
     return [
         AS400ManualConnector(),
         ConfluenceConnector(mcp_adapter=mcp_adapter),
@@ -3519,5 +3579,6 @@ def build_connectors() -> list[BaseConnector]:
         K6ReportConnector(workspace, grafana_connector=grafana_connector, skill_catalog=skill_catalog),
         K6WorkflowConnector(workspace, grafana_connector=grafana_connector, skill_catalog=skill_catalog),
         grafana_connector,
+        datadog_connector,
     ]
 
