@@ -35,6 +35,7 @@ class MCPAdapter:
         "jira": ("atlassian", "jira"),
         "confluence": ("atlassian", "confluence"),
         "grafana": ("grafana",),
+        "datadog": ("datadog",),
     }
 
     def __init__(
