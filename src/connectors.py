@@ -3499,29 +3499,93 @@ class GrafanaConnector(BaseConnector):
 
 class DatadogConnector(BaseConnector):
     source_type = "datadog"
-    target_type = "dashboard"   # or "monitor" if that matches your use case better
+    target_type = "dashboard"
 
     def __init__(self, mcp_adapter: MCPAdapter | None = None) -> None:
         super().__init__(mcp_adapter=mcp_adapter)
 
     @property
     def configured(self) -> bool:
-        if self.mcp_adapter and self.mcp_adapter.is_enabled(self.source_type):
-            return True
-        return False  # or direct Datadog API fallback if you add one
+        return bool(self._datadog_headers) or (
+            self.mcp_adapter is not None and self.mcp_adapter.is_enabled(self.source_type)
+        )
+
+    @property
+    def _datadog_headers(self) -> dict[str, str]:
+        if self.mcp_adapter:
+            server = self.mcp_adapter.server_config_for(self.source_type)
+            if server is not None:
+                api_key = (server.env or {}).get("DATADOG_API_KEY", "").strip()
+                app_key = (server.env or {}).get("DATADOG_APP_KEY", "").strip()
+                if _is_real_value(api_key) and _is_real_value(app_key):
+                    return {
+                        "DD-API-KEY": api_key,
+                        "DD-APPLICATION-KEY": app_key,
+                        "Content-Type": "application/json",
+                    }
+
+        api_key = settings.datadog_api_key.strip()
+        app_key = settings.datadog_app_key.strip()
+        if _is_real_value(api_key) and _is_real_value(app_key):
+            return {
+                "DD-API-KEY": api_key,
+                "DD-APPLICATION-KEY": app_key,
+                "Content-Type": "application/json",
+            }
+        return {}
+
+    def _call_datadog_dashboard(self, endpoint: str, params: dict[str, str]) -> tuple[dict | None, str | None]:
+        base_url = "https://api.datadoghq.com/api/v1"
+        url = f"{base_url}/{endpoint.lstrip('/')}"
+        headers = self._datadog_headers
+        if not headers:
+            return None, "Datadog API keys are not configured."
+        try:
+            response = self.session.get(url, params=params, headers=headers, timeout=REQUEST_TIMEOUT_SECONDS)
+            response.raise_for_status()
+            return response.json(), None
+        except requests.RequestException as exc:
+            return None, f"Datadog API request failed: {exc}"
 
     @property
     def configuration_message(self) -> str:
-        return "Datadog is not configured."
+        return "Datadog is not configured. Set DATADOG_API_KEY and DATADOG_APP_KEY in .env or provide them in MCP server env."
 
     def search(self, query: str, limit: int) -> list[SearchDocument]:
-        if not self.configured:
-            return []
         if self.mcp_adapter:
             delegated = self.mcp_adapter.search(self.source_type, query, limit)
             if delegated is not None:
                 return delegated
-        return []
+
+        payload, error_message = self._call_datadog_dashboard("dashboard", {"query": query})
+        if error_message or not payload:
+            return []
+
+        dashboards: list[SearchDocument] = []
+        items = payload.get("dashboards") if isinstance(payload.get("dashboards"), list) else []
+        if not items and isinstance(payload, list):
+            items = payload
+
+        for item in items[:limit]:
+            if not isinstance(item, dict):
+                continue
+            uid = str(item.get("id", ""))
+            title = str(item.get("title", "Untitled Datadog dashboard"))
+            url = str(item.get("url", ""))
+            if url.startswith("/"):
+                url = f"https://app.datadoghq.com{url}"
+            elif not url and uid:
+                url = f"https://app.datadoghq.com/dashboard/{uid}"
+            dashboards.append(
+                SearchDocument(
+                    source_type=self.source_type,
+                    title=title,
+                    url=url,
+                    content=title,
+                    metadata={"uid": uid, "via": "direct"},
+                )
+            )
+        return dashboards
 
     def create(self, request: ActionRequest) -> ActionResult:
         if self.mcp_adapter:

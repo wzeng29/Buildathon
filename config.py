@@ -59,6 +59,9 @@ class Settings:
     confluence_api_token: str = _env("CONFLUENCE_API_TOKEN")
     confluence_space_key: str = _env("CONFLUENCE_SPACE_KEY")
 
+    datadog_api_key: str = _env("DATADOG_API_KEY")
+    datadog_app_key: str = _env("DATADOG_APP_KEY")
+
     jira_base_url: str = _env("JIRA_BASE_URL")
     jira_username: str = _env("JIRA_USERNAME")
     jira_api_token: str = _env("JIRA_API_TOKEN")
