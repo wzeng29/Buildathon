@@ -1,0 +1,100 @@
+flowchart TD
+    A[User asks question in Slack or CLI]
+    B[Normalize question and load memory]
+    C[Parse explicit action, workflow intent, or retrieval intent]
+    D{Explicit action or workflow?}
+
+    A --> B --> C --> D
+
+    subgraph Entry["Slack and CLI Runtime"]
+        S1[Slack app mention or CLI input]
+        S2[Post Processing placeholder in Slack]
+        S3[Run background worker]
+        S4[Format response for Slack or CLI]
+        S5[Update placeholder or post final reply]
+        S6[Upload HTML report to Slack when available]
+    end
+
+    S1 --> S2 --> S3 --> A
+
+    subgraph Orchestrator["BuildAgents Orchestrator"]
+        O1[Select connectors]
+        O2[Collect evidence from selected connectors]
+        O3[Rank, deduplicate, and filter citations]
+        O4[AS400 citation augmentation]
+        O5{Fast local AS400 command path?}
+        O6[Local command answer]
+        O7[Format evidence for LLM]
+        O8[OpenAI answer generation]
+        O9[Store memory and citations]
+    end
+
+    subgraph Retrieval["Read and Search Path"]
+        R1[Route to AS400, Jira, Confluence, Grafana, Datadog, or k6 source]
+        R2[Connector search or read]
+    end
+
+    D -- No --> O1 --> O2 --> O3 --> O4 --> O5
+    O1 --> R1 --> R2 --> O2
+    O5 -- Yes --> O6 --> S4
+    O5 -- No --> O7 --> O8 --> S4
+    S4 --> O9 --> S5
+    S5 --> S6
+
+    subgraph AS400["AS400 RAG Path"]
+        A1[Load local PDF and CSV manuals]
+        A2[Extract page text]
+        A3[Chunk long pages]
+        A4[Build or load semantic index]
+        A5[Embed query and documents]
+        A6[Retrieve similar chunks]
+        A7[Extract command-reference snippets]
+    end
+
+    R1 -->|AS400 question| A1 --> A2 --> A3 --> A4 --> A5 --> A6 --> O2
+    A3 --> A7 --> O2
+
+    subgraph Knowledge["Enterprise Knowledge Connectors"]
+        K1[Confluence search and page read]
+        K2[Jira ticket search and read]
+    end
+
+    R1 -->|Confluence docs| K1 --> O2
+    R1 -->|Jira knowledge| K2 --> O2
+
+    subgraph Observability["Observability Connectors"]
+        G1[Grafana dashboard lookup]
+        D1[Datadog dashboard search]
+        D2[Datadog dashboard detail fetch]
+        D3[Extract widget queries]
+        D4[Datadog timeseries query]
+        D5[Build widget data summary]
+    end
+
+    R1 -->|Grafana request| G1 --> O2
+    R1 -->|Datadog request| D1 --> D2 --> D3 --> D4 --> D5 --> O2
+
+    subgraph Workflow["Jira and k6 Workflow Path"]
+        W1[Read Jira ticket]
+        W2[Workflow decision]
+        W3[Build performance plan]
+        W4[Generate ticket-scoped k6 script]
+        W5[Run k6 locally]
+        W6[Generate summary and HTML report]
+        W7[Grafana enrichment]
+        W8[Post Jira comment]
+        W9[Return workflow result document]
+    end
+
+    D -- Yes --> W1 --> W2 --> W3 --> W4 --> W5 --> W6 --> W7 --> W8 --> W9 --> S4
+
+    subgraph K6Direct["Direct k6 Tooling"]
+        T1[Run k6 test connector]
+        T2[Create k6 report connector]
+        T3[Create k6 workflow connector]
+        T4[Read artifacts from performance results]
+    end
+
+    D -- Yes --> T1 --> T4 --> S4
+    D -- Yes --> T2 --> T4 --> S4
+    D -- Yes --> T3 --> T4 --> S4

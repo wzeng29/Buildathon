@@ -1,0 +1,98 @@
+flowchart LR
+    U[Engineer / QA / Developer]
+
+    subgraph Entry["User Interfaces"]
+        Slack[Slack App]
+        CLI[Local CLI]
+    end
+
+    subgraph Core["Core Orchestration Layer"]
+        Agent[BuildAgents Orchestrator]
+        Memory[Conversation Memory]
+        Parser[Intent Parsing and Routing]
+        LLM[OpenAI Reasoning and Answer Generation]
+        FastPath[Local Fast Path for Structured AS400 Questions]
+    end
+
+    subgraph Retrieval["Knowledge and Retrieval Layer"]
+        AS400[AS400 Connector]
+        RAG[Local RAG Retrieval]
+        Manuals[IBM i PDF and CSV Manuals]
+        Index[Semantic Index and Embeddings]
+        Jira[Jira Connector]
+        Confluence[Confluence Connector]
+    end
+
+    subgraph Observability["Observability Layer"]
+        Grafana[Grafana Connector]
+        Datadog[Datadog Connector]
+        Dashboards[Dashboards and Widget Data]
+    end
+
+    subgraph Workflow["Performance Workflow Layer"]
+        JiraFlow[Jira Performance Workflow]
+        K6Tools[k6 Test / Report / Workflow Connectors]
+        K6Workspace[k6 Workspace]
+        Reports[Summary and HTML Reports]
+    end
+
+    subgraph Demo["Demo Application and Runtime Systems"]
+        Website[Demo E-commerce Website]
+        Services[Users / Products / Cart / Orders / Payments]
+        LocalObs[Prometheus / Loki / Tempo / Grafana]
+        DDObs[Datadog Agent and Datadog Cloud]
+    end
+
+    subgraph Output["Outputs"]
+        Answer[Grounded Answer with Citations]
+        ReportOut[Slack Reply / CLI Result / Uploaded Report]
+    end
+
+    U --> Slack
+    U --> CLI
+
+    Slack --> Agent
+    CLI --> Agent
+
+    Agent --> Parser
+    Agent --> Memory
+
+    Parser --> AS400
+    Parser --> Jira
+    Parser --> Confluence
+    Parser --> Grafana
+    Parser --> Datadog
+    Parser --> JiraFlow
+    Parser --> K6Tools
+
+    AS400 --> RAG
+    RAG --> Manuals
+    RAG --> Index
+    RAG --> FastPath
+    RAG --> LLM
+
+    Jira --> LLM
+    Confluence --> LLM
+
+    Grafana --> Dashboards
+    Datadog --> Dashboards
+    Dashboards --> LLM
+
+    JiraFlow --> K6Workspace
+    K6Tools --> K6Workspace
+    K6Workspace --> Reports
+    JiraFlow --> Reports
+    Reports --> ReportOut
+
+    Website --> Services
+    Services --> LocalObs
+    Services --> DDObs
+    LocalObs --> Grafana
+    DDObs --> Datadog
+    Dashboards --> ReportOut
+
+    FastPath --> Answer
+    LLM --> Answer
+    Answer --> ReportOut
+    ReportOut --> Slack
+    ReportOut --> CLI
